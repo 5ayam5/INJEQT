@@ -1,0 +1,2 @@
+measurement_table.cbor filter=lfs diff=lfs merge=lfs -text
+benchmarks filter=lfs diff=lfs merge=lfs -text
