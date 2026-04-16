@@ -1,10 +1,27 @@
 from abc import abstractmethod
+from csv import DictReader
 from dataclasses import dataclass, field
 from math import ceil, fmod, log, log10, pi
+from os import environ
+from pathlib import Path
+from subprocess import run
+from sys import path
 from typing import Self
 
 from numpy.random import Generator, default_rng
 from typing_extensions import override
+
+__ROOT_DIR__ = Path(__file__).parent
+CULTIVATION_SRC = __ROOT_DIR__ / "imports" / "magic-state-cultivation"
+SINTER_SRC = CULTIVATION_SRC / "src"
+if str(SINTER_SRC.resolve()) not in path:
+    path.insert(0, str(SINTER_SRC.resolve()))
+
+import cultiv
+import gen
+
+MAKE_CIRCUITS = CULTIVATION_SRC / "tools" / "make_circuits"
+SINTER_OUTPUTS_DIR = __ROOT_DIR__ / "sinter_outputs"
 
 """
 Different kinds of factories
@@ -96,12 +113,244 @@ class DistillationFactory(TFactory, SurfaceCodeFactory):
 
 @dataclass(frozen=True)
 class CultivationFactory(TFactory, SurfaceCodeFactory):
+    SEED: int = 0
+    rng: Generator = default_rng(SEED)
+    d_colour_code: int = 3
+    r1: int = 3
+    r2: int = 5
+
     @property
     @abstractmethod
     @override
     def t_prep_time(self: Self) -> float:
-        # TODO: implement this and error rates
-        pass
+        def get_rounds(
+            circuit_type: str,
+        ) -> int:
+            if circuit_type == "inject[unitary]+cultivate":
+                circuit = cultiv.make_inject_and_cultivate_circuit(
+                    inject_style="unitary",
+                    dcolor=self.d_colour_code,
+                    basis="Y",
+                )
+            elif circuit_type == "escape-to-big-matchable-code":
+                circuit = cultiv.make_escape_to_big_matchable_code_circuit(
+                    dcolor=self.d_colour_code,
+                    dsurface=self.d_factory,
+                    basis="Y",
+                    r_growing=self.r1,
+                    r_end=self.r2,
+                )
+            else:
+                raise NotImplementedError(f"Unsupported circuit_type: {circuit_type!r}")
+
+            return gen.count_measurement_layers(circuit)
+
+        def quick_calc_prob(stats_path: str) -> float:
+            total_shots = 0
+            total_discards = 0
+            with open(stats_path, newline="") as f:
+                reader = DictReader(f)
+                for row in reader:
+                    total_shots += int(row["shots"])
+                    total_discards += int(row["discards"])
+
+            if total_shots == 0:
+                raise ValueError("No shots recorded in stats CSV.")
+
+            prob = 1 - (total_discards / total_shots)
+            return prob
+
+        def _generate_circuit(circuit_type, gateset):
+            """Run make_circuits to produce the .stim file, exactly as cmd.sh does."""
+            cmd = [
+                str(MAKE_CIRCUITS),
+                "--circuit_type",
+                circuit_type,
+                "--noise_strength",
+                str(self.physical_qubit_error_rate),
+                "--gateset",
+                gateset,
+                "--basis",
+                "Y",
+                "--d1",
+                str(self.d_colour_code),
+                "--out_dir",
+                str(SINTER_OUTPUTS_DIR),
+            ]
+            if circuit_type == "escape-to-big-matchable-code":
+                cmd += ["--r1", str(self.r1)]
+                cmd += ["--r2", str(self.r2)]
+                cmd += ["--d2", str(self.d_factory)]
+
+            env = environ.copy()
+            env["PYTHONPATH"] = str(SINTER_SRC)
+            print(f"Running: PYTHONPATH={SINTER_SRC} {' '.join(cmd)}")
+            result = run(cmd, env=env, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"make_circuits failed:\n{result.stderr}")
+            print(result.stdout.strip())
+
+        def _find_circuit_file(circuit_type: str, gateset: str):
+            r = get_rounds(
+                circuit_type=circuit_type,
+            )
+            noise = "uniform" if gateset == "css" else "si1000"
+
+            if circuit_type == "inject[unitary]+cultivate":
+                noiseless = cultiv.make_inject_and_cultivate_circuit(
+                    inject_style="unitary", dcolor=self.d_colour_code, basis="Y"
+                )
+                meta = {
+                    "c": circuit_type,
+                    "p": self.physical_qubit_error_rate,
+                    "noise": noise,
+                    "g": gateset,
+                    "q": noiseless.num_qubits,
+                    "b": "Y",
+                    "r": r,
+                    "d1": self.d_colour_code,
+                }
+            elif circuit_type == "escape-to-big-matchable-code":
+                noiseless = cultiv.make_escape_to_big_matchable_code_circuit(
+                    dcolor=self.d_colour_code,
+                    dsurface=self.d_factory,
+                    basis="Y",
+                    r_growing=self.r1,
+                    r_end=self.r2,
+                )
+                meta = {
+                    "c": circuit_type,
+                    "p": self.physical_qubit_error_rate,
+                    "noise": noise,
+                    "g": gateset,
+                    "q": noiseless.num_qubits,
+                    "b": "Y",
+                    "r": r,
+                    "r1": self.r1,
+                    "d1": self.d_colour_code,
+                    "r2": self.r2,
+                    "d2": self.d_factory,
+                }
+            else:
+                raise NotImplementedError(f"Unsupported circuit_type: {circuit_type!r}")
+
+            meta_str = ",".join(f"{k}={v}" for k, v in meta.items())
+            return SINTER_OUTPUTS_DIR / f"{meta_str}.stim"
+
+        def get_success_prob(
+            circuit_type: str,
+            gateset: str,
+            decoder: str = "perfectionist",
+            max_shots: int = 10_000_000,
+            stats_file_name: str = "stats.csv",
+        ) -> float:
+            circuit_path = _find_circuit_file(circuit_type, gateset)
+
+            if not circuit_path.exists():
+                print("Circuit file not found, running make_circuits...")
+                _generate_circuit(circuit_type, gateset)
+            else:
+                print(f"Using existing circuit: {circuit_path.name}")
+
+            SINTER_OUTPUTS_DIR.mkdir(exist_ok=True)
+            stats_path = SINTER_OUTPUTS_DIR / stats_file_name
+            stats_path.write_text(
+                "shots,errors,discards,seconds,decoder,strong_id,json_metadata\n"
+            )
+
+            print(f"Stats file: {stats_path.resolve()}")
+
+            cmd = [
+                "sinter",
+                "collect",
+                "--metadata_func",
+                "auto",
+                "--circuits",
+                str(circuit_path),
+                "--decoders",
+                decoder,
+                "--max_shots",
+                str(max_shots),
+                "--custom_decoders",
+                "cultiv:sinter_samplers",
+                "--save_resume_filepath",
+                str(SINTER_OUTPUTS_DIR / stats_file_name),
+            ]
+            env = environ.copy()
+            env["PYTHONPATH"] = str(SINTER_SRC)
+
+            print(f"Running: PYTHONPATH={SINTER_SRC} {' '.join(cmd)}")
+            result = run(cmd, env=env, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print("sinter stderr:", result.stderr)
+                raise RuntimeError(
+                    f"sinter collect failed with exit code {result.returncode}"
+                )
+
+            return quick_calc_prob(str(SINTER_OUTPUTS_DIR / stats_file_name))
+
+        def stage1_2_success_probability() -> float:
+            stats_file_name = (
+                f"stats_inject_unitary_cultivate,d1={self.d_colour_code},"
+                f"noise_strength={self.physical_qubit_error_rate}.csv"
+            )
+            stats_full_path = SINTER_OUTPUTS_DIR / stats_file_name
+            if stats_full_path.exists():
+                prob = quick_calc_prob(stats_path=str(stats_full_path))
+            else:
+                prob = get_success_prob(
+                    circuit_type="inject[unitary]+cultivate",
+                    gateset="css",
+                    decoder="perfectionist",
+                    stats_file_name=stats_file_name,
+                )
+            return prob
+
+        def stage3_success_probability() -> float:
+            stats_file_name = (
+                f"stats_escape_to_big_matchable_code,d1={self.d_colour_code},"
+                f"d2={self.d_factory},r1={self.r1},r2={self.r2},"
+                f"noise_strength={self.physical_qubit_error_rate}.csv"
+            )
+            stats_full_path = SINTER_OUTPUTS_DIR / stats_file_name
+            if stats_full_path.exists():
+                prob = quick_calc_prob(stats_path=str(stats_full_path))
+            else:
+                prob = get_success_prob(
+                    circuit_type="escape-to-big-matchable-code",
+                    gateset="css",
+                    decoder="desaturation",
+                    stats_file_name=stats_file_name,
+                )
+            return prob
+
+        n_color = (3 * (self.d_colour_code * self.d_colour_code) + 1) / 4
+
+        c1 = get_rounds("inject[unitary]+cultivate")
+        c2 = get_rounds("escape-to-big-matchable-code")
+
+        p12 = stage1_2_success_probability()
+        p3 = stage3_success_probability()
+
+        def one_round() -> float:
+            time = 0.0
+
+            while True:  # escape success
+                while True:  # parallel success of colour code preparation
+                    time += c1
+                    if log(self.rng.uniform(0.0, 1.0)) >= (
+                        self.d_factory * self.d_factory
+                    ) / n_color * log(1 - p12):
+                        break  # parallel preparations and we loop if all fail
+
+                time += c2
+                if log(p3) >= log(self.rng.uniform(0.0, 1.0)):
+                    break  # loop if escape fails
+
+            return time
+
+        return one_round()
 
 
 @dataclass(frozen=True)
@@ -183,6 +432,7 @@ class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
 @dataclass(frozen=True)
 class STARSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
     SEED: int = 0
+    rng: Generator = default_rng(SEED)
 
     @property
     @override
@@ -240,21 +490,19 @@ class STARSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
             (self.d_factory * self.d_factory - 1) / 2
         ) * (log(circuit_success_probability(7)) + log(circuit_success_probability(5)))
 
-        rng = default_rng()
-
         def one_round() -> float:
             time = 0.0
 
             while True:  # expansion success
                 while True:  # parallel success of [[4,1,1,2]] preparation
                     time += 4.0
-                    if log(rng.uniform(0.0, 1.0)) >= (
+                    if log(self.rng.uniform(0.0, 1.0)) >= (
                         (self.d_factory - 1) / 2
                     ) ** 2 * log(1 - m_theta_success_probability):
                         break  # ((d - 1) / 2)^2 parallel preparations and we loop if all fail
 
                 time += 2 * self.factory_syndrome_extraction_cycles
-                if log_expansion_success_probability >= log(rng.uniform(0.0, 1.0)):
+                if log_expansion_success_probability >= log(self.rng.uniform(0.0, 1.0)):
                     break  # loop if expansion fails
 
             return time
@@ -318,11 +566,10 @@ class INJEQTTimingModel(TimingModel):
     factory: RzFactory
     num_factories: int = 1
     factory_availabilities: dict[int, tuple[float | None, float]] = field(init=False)
-    seed: int = 0
-    rng: Generator = default_rng(seed)
+    SEED: int = 0
+    rng: Generator = default_rng(SEED)
 
     def __post_init__(self):
-        print(f"Initializing INJEQTTimingModel with {self.num_factories} factories.")
         initial_dict = {i: (None, 0) for i in range(self.num_factories)}
 
         object.__setattr__(self, "factory_availabilities", initial_dict)

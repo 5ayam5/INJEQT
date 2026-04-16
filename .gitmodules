@@ -1,0 +1,3 @@
+[submodule "imports/magic-state-cultivation"]
+	path = imports/magic-state-cultivation
+	url = https://github.com/Strilanc/magic-state-cultivation.git
