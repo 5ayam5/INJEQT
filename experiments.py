@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from numpy.random import Generator, default_rng
+
 try:
     import cbor2
 except ImportError:  # optional until lookup table build is needed
@@ -205,9 +207,9 @@ def create_and_map_rotations(
             chunk_string = chunks_pauli_strings[c]
             chunk_bits = chunks_bits_affected[c]
             real_bits = []
-            for i in range(len(chunk_bits)):
-                x = int(bits[i])
-                assert 0 <= x <= num_program_bits
+            for x in chunk_bits:
+                x = int(x)
+                assert 0 <= x < num_program_bits
                 real_x = x % NUM_LOGICAL_QUBITS_PER_MODULE
                 real_bits.append(real_x)
             assert len(chunk_bits) == len(real_bits)
@@ -250,6 +252,10 @@ def line_topology_inter_cost(
             low = lo
             high = hi
     return int(best if best != math.inf else 0), list(range(low, high + 1))
+
+
+def spawn_child_rng(rng: Generator) -> Generator:
+    return default_rng(int(rng.integers(0, 2**63 - 1)))
 
 
 def evaluate_circuit(
@@ -306,28 +312,36 @@ def evaluate_circuit(
         inter_modules += inter_modules_count
         inter_depth = math.ceil(math.log2(inter_modules_count + 1))
 
-        start_t = 0.0
-        for m in touched_modules:
-            start_t = max(start_t, module_ready.get(m, 0.0))
-
+        in_start_t = 0.0
+        for m in assoc_inter_modules_list:
+            in_start_t = max(in_start_t, module_ready.get(m, 0.0))
         in_time = in_modules_count_this_step * timing_model.in_module_step
+        in_end_t = in_start_t + in_time
+
+        inter_start_t = in_end_t
+        for m in touched_modules:
+            inter_start_t = max(inter_start_t, module_ready.get(m, 0.0))
+
         inter_time = inter_depth * timing_model.inter_module_layer_step
-        end_t = start_t + in_time + inter_time
+        inter_end_t = inter_start_t + inter_time
+        end_t = inter_end_t
 
         # Phase 3: Rz synthesis via T injections
         if gate_type == "nonclifford":
             assert angle is not None, "Nonclifford gates must have an angle specified"
             rz_finish_time, num_injections = timing_model.rz_injection_time(
-                start_t, end_t, angle
+                in_start_t, inter_end_t, angle
             )
             rz_injection_error += (
                 num_injections * error_model.inter_cost
                 + timing_model.factory.synthesis_logical_error_rate
             )
-            time_rz_injection += rz_finish_time - end_t
+            time_rz_injection += rz_finish_time - inter_end_t
             end_t = rz_finish_time
 
         for m in touched_modules:
+            if m == -1:
+                continue
             module_ready[m] = end_t
 
         wall_clock = max(wall_clock, end_t)
@@ -402,7 +416,14 @@ def main():
         default=None,
         help="Optional explicit path to meas_lookup_table.pkl",
     )
+    parser.add_argument(
+        "--seed",
+        default=None,
+        type=int,
+        help="Optional RNG seed for stochastic factory/timing behavior.",
+    )
     args = parser.parse_args()
+    root_rng = default_rng(args.seed)
 
     root = Path(__file__).resolve().parent
 
@@ -422,37 +443,57 @@ def main():
         timing_model = TDGTimingModel(factory_model)
 
     elif factory_type == "Cultivation":
-        factory_model = CultivationFactory(args.factory_distance)
+        factory_model = CultivationFactory(
+            args.factory_distance,
+            rng=spawn_child_rng(root_rng),
+        )
         timing_model = TDGTimingModel(factory_model)
 
     elif factory_type == "SuperconductingRz":
         factory_model = SuperconductingSurfaceCodeFactory(
             args.factory_distance,
             t_factory_type=args.t_factory_type,
+            rng=spawn_child_rng(root_rng),
         )
         timing_model = INJEQTTimingModel(
-            factory_model, num_factories=args.num_factories
+            factory_model,
+            num_factories=args.num_factories,
+            rng=spawn_child_rng(root_rng),
         )
 
     elif factory_type == "NeutralAtomRz":
         factory_model = NeutralAtomSurfaceCodeFactory(
-            args.factory_distance, t_factory_type=args.t_factory_type
+            args.factory_distance,
+            t_factory_type=args.t_factory_type,
+            rng=spawn_child_rng(root_rng),
         )
         timing_model = INJEQTTimingModel(
-            factory_model, num_factories=args.num_factories
+            factory_model,
+            num_factories=args.num_factories,
+            rng=spawn_child_rng(root_rng),
         )
 
     elif factory_type == "STARRz":
-        factory_model = STARSurfaceCodeFactory(args.factory_distance)
+        factory_model = STARSurfaceCodeFactory(
+            args.factory_distance,
+            rng=spawn_child_rng(root_rng),
+        )
         timing_model = INJEQTTimingModel(
-            factory_model, num_factories=args.num_factories
+            factory_model,
+            num_factories=args.num_factories,
+            rng=spawn_child_rng(root_rng),
         )
 
     elif factory_type == "ColourCodeRz":
         factory_model = ColourCodeFactory(args.factory_distance)
         timing_model = INJEQTTimingModel(
-            factory_model, num_factories=args.num_factories
+            factory_model,
+            num_factories=args.num_factories,
+            rng=spawn_child_rng(root_rng),
         )
+
+    else:
+        raise ValueError(f"Invalid factory type: {factory_type}")
 
     stats = evaluate_circuit(
         circuit=circuit,

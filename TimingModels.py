@@ -60,7 +60,10 @@ class Factory:
 @dataclass(frozen=True)
 class TFactory(Factory):
     synthesis_epsilon: float = 1e-10
-    num_t_injections: int = ceil(-10 * log10(synthesis_epsilon))
+
+    @property
+    def num_t_injections(self: Self) -> int:
+        return ceil(-10 * log10(self.synthesis_epsilon))
 
     @property
     @abstractmethod
@@ -113,14 +116,19 @@ class DistillationFactory(TFactory, SurfaceCodeFactory):
 
 @dataclass(frozen=True)
 class CultivationFactory(TFactory, SurfaceCodeFactory):
-    SEED: int = 0
-    rng: Generator = default_rng(SEED)
+    rng: Generator = field(default_factory=default_rng)
     d_colour_code: int = 3
     r1: int = 3
     r2: int = 5
 
     @property
     @abstractmethod
+    def synthesis_logical_error_rate(self: Self) -> float:
+        raise NotImplementedError(
+            "CultivationFactory.synthesis_logical_error_rate is not implemented yet."
+        )
+
+    @property
     @override
     def t_prep_time(self: Self) -> float:
         def get_rounds(
@@ -364,6 +372,7 @@ class RzFactory(Factory):
 @dataclass(frozen=True)
 class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
     t_factory_type: str = "Distillation"
+    rng: Generator = field(default_factory=default_rng)
 
     @property
     @override
@@ -385,6 +394,7 @@ class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
             return CultivationFactory(
                 d_factory=self.d_factory,
                 physical_qubit_error_rate=self.physical_qubit_error_rate,
+                rng=self.rng,
             )
         else:
             raise ValueError(f"Unknown T factory type: {self.t_factory_type}")
@@ -431,8 +441,7 @@ class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
 
 @dataclass(frozen=True)
 class STARSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
-    SEED: int = 0
-    rng: Generator = default_rng(SEED)
+    rng: Generator = field(default_factory=default_rng)
 
     @property
     @override
@@ -516,7 +525,9 @@ class ColourCodeFactory(RzFactory):
     @abstractmethod
     @override
     def factory_prep_time(self: Self) -> float:
-        pass  # TODO: implement this and error rates
+        raise NotImplementedError(
+            "ColourCodeFactory.factory_prep_time is not implemented yet."
+        )
 
 
 @dataclass(frozen=True)
@@ -549,6 +560,10 @@ class TimingModel:
 class TDGTimingModel(TimingModel):
     factory: TFactory
 
+    def __post_init__(self):
+        if not isinstance(self.factory, TFactory):
+            raise TypeError("TDGTimingModel requires a TFactory.")
+
     @override
     def rz_injection_time(
         self: Self,
@@ -566,10 +581,13 @@ class INJEQTTimingModel(TimingModel):
     factory: RzFactory
     num_factories: int = 1
     factory_availabilities: dict[int, tuple[float | None, float]] = field(init=False)
-    SEED: int = 0
-    rng: Generator = default_rng(SEED)
+    rng: Generator = field(default_factory=default_rng)
 
     def __post_init__(self):
+        if not isinstance(self.factory, RzFactory):
+            raise TypeError("INJEQTTimingModel requires an RzFactory.")
+        if self.num_factories <= 0:
+            raise ValueError("num_factories must be a positive integer.")
         initial_dict = {i: (None, 0) for i in range(self.num_factories)}
 
         object.__setattr__(self, "factory_availabilities", initial_dict)
