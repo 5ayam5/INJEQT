@@ -56,6 +56,16 @@ class Factory:
     def factory_prep_time(self: Self) -> float:
         pass
 
+    @property
+    @abstractmethod
+    def num_physical_qubits(self: Self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def _num_physical_qubits_per_logical_qubit(self: Self) -> int:
+        pass
+
 
 @dataclass(frozen=True)
 class TFactory(Factory):
@@ -83,9 +93,30 @@ class SurfaceCodeFactory(Factory):
     def factory_syndrome_extraction_cycles(self: Self) -> int:
         return 6
 
+    @property
+    @override
+    def _num_physical_qubits_per_logical_qubit(self: Self) -> int:
+        return 2 * self.d_factory**2 - 1
+
 
 @dataclass(frozen=True)
 class DistillationFactory(TFactory, SurfaceCodeFactory):
+    @property
+    def d_factory_z(self: Self) -> int:
+        return {
+            7: 3,
+            9: 3,
+            11: 5,
+        }[self.d_factory]
+
+    @property
+    def d_factory_m(self: Self) -> int:
+        return {
+            7: 3,
+            9: 3,
+            11: 5,
+        }[self.d_factory]
+
     @property
     @override
     def synthesis_logical_error_rate(self: Self) -> float:
@@ -113,6 +144,14 @@ class DistillationFactory(TFactory, SurfaceCodeFactory):
 
         return distillation_time_lookup() * self.factory_syndrome_extraction_cycles
 
+    @property
+    @override
+    def num_physical_qubits(self: Self) -> int:
+        return (
+            2 * (self.d_factory + 4 * self.d_factory_z) * 3 * self.d_factory
+            + 4 * self.d_factory_m
+        )
+
 
 @dataclass(frozen=True)
 class CultivationFactory(TFactory, SurfaceCodeFactory):
@@ -123,6 +162,7 @@ class CultivationFactory(TFactory, SurfaceCodeFactory):
 
     @property
     @abstractmethod
+    @override
     def synthesis_logical_error_rate(self: Self) -> float:
         raise NotImplementedError(
             "CultivationFactory.synthesis_logical_error_rate is not implemented yet."
@@ -360,6 +400,42 @@ class CultivationFactory(TFactory, SurfaceCodeFactory):
 
         return one_round()
 
+    @property
+    @override
+    def num_physical_qubits(self: Self) -> int:
+        return 2 * self.d_factory**2 - 1
+
+
+@dataclass(frozen=True)
+class ColourCodeFactory(TFactory):
+    @property
+    @override
+    def synthesis_logical_error_rate(self: Self) -> float:
+        raise NotImplementedError(
+            "ColourCodeFactory.synthesis_logical_error_rate is not implemented yet."
+        )
+
+    @property
+    @override
+    def factory_prep_time(self: Self) -> float:
+        raise NotImplementedError(
+            "ColourCodeFactory.factory_prep_time is not implemented yet."
+        )
+
+    @property
+    @override
+    def num_physical_qubits(self: Self) -> int:
+        raise NotImplementedError(
+            "ColourCodeFactory.num_physical_qubits is not implemented yet."
+        )
+
+    @property
+    @override
+    def _num_physical_qubits_per_logical_qubit(self: Self) -> int:
+        raise NotImplementedError(
+            "ColourCodeFactory._num_physical_qubits_per_logical_qubit is not implemented yet."
+        )
+
 
 @dataclass(frozen=True)
 class RzFactory(Factory):
@@ -396,8 +472,23 @@ class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
                 physical_qubit_error_rate=self.physical_qubit_error_rate,
                 rng=self.rng,
             )
+        elif self.t_factory_type == "ColourCode":
+            return ColourCodeFactory(
+                d_factory=self.d_factory,
+                physical_qubit_error_rate=self.physical_qubit_error_rate,
+            )
         else:
             raise ValueError(f"Unknown T factory type: {self.t_factory_type}")
+
+    @property
+    @override
+    def num_physical_qubits(self: Self) -> int:
+        return self.t_factory.num_physical_qubits + self._physical_qubit_overhead
+
+    @property
+    @abstractmethod
+    def _physical_qubit_overhead(self: Self) -> int:
+        pass
 
 
 @dataclass(frozen=True)
@@ -418,6 +509,11 @@ class SuperconductingSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
             t_prep_time + self.d_factory * self.factory_syndrome_extraction_cycles
         )
 
+    @property
+    @override
+    def _physical_qubit_overhead(self: Self) -> int:
+        return 2 * self._num_physical_qubits_per_logical_qubit
+
 
 @dataclass(frozen=True)
 class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
@@ -429,7 +525,6 @@ class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
             * self.t_factory.synthesis_logical_error_rate
         )
 
-    # FIXME: check if this is the correct timing model
     @property
     @override
     def factory_prep_time(self: Self) -> float:
@@ -437,6 +532,11 @@ class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
         return self.t_factory.num_t_injections * (
             t_prep_time + self.factory_syndrome_extraction_cycles
         )
+
+    @property
+    @override
+    def _physical_qubit_overhead(self: Self) -> int:
+        return self._num_physical_qubits_per_logical_qubit
 
 
 @dataclass(frozen=True)
@@ -518,33 +618,49 @@ class STARSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
 
         return one_round()
 
-
-@dataclass(frozen=True)
-class ColourCodeFactory(RzFactory):
     @property
-    @abstractmethod
     @override
-    def factory_prep_time(self: Self) -> float:
-        raise NotImplementedError(
-            "ColourCodeFactory.factory_prep_time is not implemented yet."
-        )
+    def num_physical_qubits(self: Self) -> int:
+        return self._num_physical_qubits_per_logical_qubit
 
 
 @dataclass(frozen=True)
-class TimingModel:
+class ExecutionModel:
     factory: Factory
+    num_modules: int
 
-    d_gross: int = 10
+    d_operational_gross: int = 10
     idle_gross_code: int = 8
 
-    in_module_step: float = 12 * d_gross
+    in_module_step: float = 12 * d_operational_gross
     AVERAGE_IN_MODULE_COUNTS: float = 18.5
-    inter_module_layer_step: float = 12 * d_gross
+    inter_module_layer_step: float = 12 * d_operational_gross
+
+    n_gross: int = 288
+    n_lpu: int = 90
+    n_adapter: int = 22
+    n_factory_adapter: int = 13
 
     @property
     @abstractmethod
     def t_prep_time(self: Self) -> float:
         pass
+
+    @property
+    def num_gross_qubits(self: Self) -> int:
+        return (
+            (self.n_gross + self.n_lpu) * self.num_modules
+            + self.n_adapter * (self.num_modules - 1)
+            + self.n_factory_adapter
+        )
+
+    @property
+    def num_factory_qubits(self: Self) -> int:
+        return self.factory.num_physical_qubits
+
+    @property
+    def num_physical_qubits(self: Self) -> int:
+        return self.num_gross_qubits + self.num_factory_qubits
 
     @abstractmethod
     def rz_injection_time(
@@ -557,12 +673,12 @@ class TimingModel:
 
 
 @dataclass(frozen=True)
-class TDGTimingModel(TimingModel):
+class TDGExecutionModel(ExecutionModel):
     factory: TFactory
 
     def __post_init__(self):
         if not isinstance(self.factory, TFactory):
-            raise TypeError("TDGTimingModel requires a TFactory.")
+            raise TypeError("TDGExecutionModel requires a TFactory.")
 
     @override
     def rz_injection_time(
@@ -577,7 +693,7 @@ class TDGTimingModel(TimingModel):
 
 
 @dataclass(frozen=True)
-class INJEQTTimingModel(TimingModel):
+class INJEQTExecutionModel(ExecutionModel):
     factory: RzFactory
     num_factories: int = 1
     factory_availabilities: dict[int, tuple[float | None, float]] = field(init=False)
@@ -585,12 +701,20 @@ class INJEQTTimingModel(TimingModel):
 
     def __post_init__(self):
         if not isinstance(self.factory, RzFactory):
-            raise TypeError("INJEQTTimingModel requires an RzFactory.")
+            raise TypeError("INJEQTExecutionModel requires an RzFactory.")
         if self.num_factories <= 0:
             raise ValueError("num_factories must be a positive integer.")
-        initial_dict = {i: (None, 0) for i in range(self.num_factories)}
 
-        object.__setattr__(self, "factory_availabilities", initial_dict)
+        object.__setattr__(
+            self,
+            "factory_availabilities",
+            {i: (None, 0) for i in range(self.num_factories)},
+        )
+
+    @property
+    @override
+    def num_factory_qubits(self: Self) -> int:
+        return super().num_factory_qubits * self.num_factories
 
     def _consume_factory(
         self: Self, angle: float, aware_time: float, ready_time: float

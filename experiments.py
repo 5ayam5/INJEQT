@@ -15,15 +15,14 @@ except ImportError:  # optional until lookup table build is needed
     cbor2 = None
 
 from TimingModels import (
-    ColourCodeFactory,
     CultivationFactory,
     DistillationFactory,
-    INJEQTTimingModel,
+    ExecutionModel,
+    INJEQTExecutionModel,
     NeutralAtomSurfaceCodeFactory,
     STARSurfaceCodeFactory,
     SuperconductingSurfaceCodeFactory,
-    TDGTimingModel,
-    TimingModel,
+    TDGExecutionModel,
 )
 
 RotationsType = list[
@@ -263,7 +262,7 @@ def evaluate_circuit(
     lookup: dict[int, int],
     num_program_bits: int,
     error_model: GrossCodeErrorModel,
-    timing_model: TimingModel,
+    execution_model: ExecutionModel,
 ):
     mapped_rotations, associated_modules = create_and_map_rotations(
         circuit.compiled_operations, num_program_bits
@@ -315,26 +314,26 @@ def evaluate_circuit(
         in_start_t = 0.0
         for m in assoc_inter_modules_list:
             in_start_t = max(in_start_t, module_ready.get(m, 0.0))
-        in_time = in_modules_count_this_step * timing_model.in_module_step
+        in_time = in_modules_count_this_step * execution_model.in_module_step
         in_end_t = in_start_t + in_time
 
         inter_start_t = in_end_t
         for m in touched_modules:
             inter_start_t = max(inter_start_t, module_ready.get(m, 0.0))
 
-        inter_time = inter_depth * timing_model.inter_module_layer_step
+        inter_time = inter_depth * execution_model.inter_module_layer_step
         inter_end_t = inter_start_t + inter_time
         end_t = inter_end_t
 
         # Phase 3: Rz synthesis via T injections
         if gate_type == "nonclifford":
             assert angle is not None, "Nonclifford gates must have an angle specified"
-            rz_finish_time, num_injections = timing_model.rz_injection_time(
+            rz_finish_time, num_injections = execution_model.rz_injection_time(
                 in_start_t, inter_end_t, angle
             )
             rz_injection_error += (
                 num_injections * error_model.inter_cost
-                + timing_model.factory.synthesis_logical_error_rate
+                + execution_model.factory.synthesis_logical_error_rate
             )
             time_rz_injection += rz_finish_time - inter_end_t
             end_t = rz_finish_time
@@ -352,6 +351,9 @@ def evaluate_circuit(
     inter_error = inter_modules * error_model.inter_cost
     total_error = in_error + inter_error + rz_injection_error
 
+    num_physical_qubits = execution_model.num_physical_qubits
+    space_time = num_physical_qubits * wall_clock
+
     return {
         "#in_modules": in_modules,
         "#inter_modules": inter_modules,
@@ -365,6 +367,8 @@ def evaluate_circuit(
         "time_rz_injection": time_rz_injection,
         "active_time": time_in_module + time_inter_module + time_rz_injection,
         "wall_clock_time": wall_clock,
+        "num_physical_qubits": num_physical_qubits,
+        "space_time": space_time,
     }
 
 
@@ -387,7 +391,6 @@ def main():
             "SuperconductingRz",
             "NeutralAtomRz",
             "STARRz",
-            "ColourCodeRz",
         ],
         type=str,
         help="Type of factory to use for inter-module operations",
@@ -395,7 +398,7 @@ def main():
     parser.add_argument(
         "--t-factory-type",
         default="Distillation",
-        choices=["Distillation", "Cultivation"],
+        choices=["Distillation", "Cultivation", "ColourCode"],
         type=str,
         help="Type of factory to use for T state production (default: Distillation)",
     )
@@ -437,17 +440,19 @@ def main():
     with open(compiled_path, "rb") as f:
         circuit: CompiledCirc = pkl.load(f)
 
+    num_modules = math.ceil(args.num_program_bits / NUM_LOGICAL_QUBITS_PER_MODULE)
+
     factory_type = args.factory_type
     if factory_type == "Distillation":
         factory_model = DistillationFactory(args.factory_distance)
-        timing_model = TDGTimingModel(factory_model)
+        execution_model = TDGExecutionModel(factory_model, num_modules)
 
     elif factory_type == "Cultivation":
         factory_model = CultivationFactory(
             args.factory_distance,
             rng=spawn_child_rng(root_rng),
         )
-        timing_model = TDGTimingModel(factory_model)
+        execution_model = TDGExecutionModel(factory_model, num_modules)
 
     elif factory_type == "SuperconductingRz":
         factory_model = SuperconductingSurfaceCodeFactory(
@@ -455,8 +460,9 @@ def main():
             t_factory_type=args.t_factory_type,
             rng=spawn_child_rng(root_rng),
         )
-        timing_model = INJEQTTimingModel(
+        execution_model = INJEQTExecutionModel(
             factory_model,
+            num_modules,
             num_factories=args.num_factories,
             rng=spawn_child_rng(root_rng),
         )
@@ -467,8 +473,9 @@ def main():
             t_factory_type=args.t_factory_type,
             rng=spawn_child_rng(root_rng),
         )
-        timing_model = INJEQTTimingModel(
+        execution_model = INJEQTExecutionModel(
             factory_model,
+            num_modules,
             num_factories=args.num_factories,
             rng=spawn_child_rng(root_rng),
         )
@@ -478,16 +485,9 @@ def main():
             args.factory_distance,
             rng=spawn_child_rng(root_rng),
         )
-        timing_model = INJEQTTimingModel(
+        execution_model = INJEQTExecutionModel(
             factory_model,
-            num_factories=args.num_factories,
-            rng=spawn_child_rng(root_rng),
-        )
-
-    elif factory_type == "ColourCodeRz":
-        factory_model = ColourCodeFactory(args.factory_distance)
-        timing_model = INJEQTTimingModel(
-            factory_model,
+            num_modules,
             num_factories=args.num_factories,
             rng=spawn_child_rng(root_rng),
         )
@@ -500,7 +500,7 @@ def main():
         lookup=lookup,
         num_program_bits=args.num_program_bits,
         error_model=GrossCodeErrorModel(),
-        timing_model=timing_model,
+        execution_model=execution_model,
     )
 
     print(f"circuit: {compiled_path.name}")
