@@ -12,16 +12,7 @@ from re import match, search
 from typing import Any
 
 import matplotlib
-from numpy.random import Generator, default_rng
-
-from experiments import (
-    NUM_LOGICAL_QUBITS_PER_MODULE,
-    CompiledCirc,
-    GrossCodeErrorModel,
-    evaluate_circuit,
-    load_lookup_table,
-)
-from TimingModels import (
+from ExecutionModels import (
     ColourCodeFactory,
     CultivationFactory,
     DistillationFactory,
@@ -31,6 +22,14 @@ from TimingModels import (
     SuperconductingSurfaceCodeFactory,
     TDGExecutionModel,
 )
+from experiments import (
+    NUM_LOGICAL_QUBITS_PER_MODULE,
+    CompiledCirc,
+    GrossCodeErrorModel,
+    evaluate_circuit,
+    load_lookup_table,
+)
+from numpy.random import Generator, default_rng
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -805,7 +804,7 @@ def main() -> None:
         raise ValueError("--parallel-cores must be a positive integer.")
     num_factories_sweep = parse_num_factories_sweep(args.num_factories_sweep)
 
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parent.parent
     benchmarks_dir = (root / args.benchmarks_dir).resolve()
     base_outputs_dir = (root / args.outputs_dir).resolve()
     seed_root = (
@@ -909,10 +908,10 @@ def main() -> None:
         all_rows = list(merged_rows_by_key.values())
         all_rows.sort(key=row_sort_key)
         write_rows(csv_path, all_rows)
+        print(f"Wrote CSV: {csv_path}")
 
     plot_from_csv(csv_path, outputs_dir)
 
-    print(f"Wrote CSV: {csv_path}")
     print(f"Wrote box plots to: {outputs_dir}")
 
 

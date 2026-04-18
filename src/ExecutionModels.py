@@ -11,7 +11,7 @@ from typing import Self
 from numpy.random import Generator, default_rng
 from typing_extensions import override
 
-__ROOT_DIR__ = Path(__file__).parent
+__ROOT_DIR__ = Path(__file__).parent.parent
 CULTIVATION_SRC = __ROOT_DIR__ / "imports" / "magic-state-cultivation"
 SINTER_SRC = CULTIVATION_SRC / "src"
 if str(SINTER_SRC.resolve()) not in path:
