@@ -566,7 +566,7 @@ def _plot_grouped_boxplot(
     width = 0.75 / max(1, len(labels))
     legend_handles: list[Patch] = []
 
-    plt.figure(figsize=(max(12, len(benchmarks) * 0.6), 6))
+    plt.figure(figsize=(max(12, len(benchmarks) * 0.6), 4))
     for idx, label in enumerate(labels):
         benchmark_map = series_data[label]
         offset = (idx - (len(labels) - 1) / 2.0) * width
@@ -647,7 +647,7 @@ def _plot_sweep_summary(
     title: str,
     output_path: Path,
 ) -> None:
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(6, 4))
     has_data = False
     colors = {
         "Superconducting": "#4472C4",
@@ -789,6 +789,12 @@ def main() -> None:
         type=int,
         help="Optional seed for reproducible per-run RNG streams.",
     )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Only generate plots from existing CSV data, "
+        "skipping benchmark execution/retries.",
+    )
     args = parser.parse_args()
 
     if args.num_trials <= 0:
@@ -810,96 +816,100 @@ def main() -> None:
     outputs_dir = base_outputs_dir / str(seed_root)
     csv_path = outputs_dir / args.csv_name
 
-    if not benchmarks_dir.exists():
-        raise FileNotFoundError(f"Benchmarks directory not found: {benchmarks_dir}")
+    if not args.plot_only:
+        if not benchmarks_dir.exists():
+            raise FileNotFoundError(f"Benchmarks directory not found: {benchmarks_dir}")
 
-    if args.lookup_pkl is not None:
-        with open(Path(args.lookup_pkl).expanduser().resolve(), "rb") as f:
-            lookup = load(f)
-    else:
-        lookup = load_lookup_table(root)
+        if args.lookup_pkl is not None:
+            with open(Path(args.lookup_pkl).expanduser().resolve(), "rb") as f:
+                lookup = load(f)
+        else:
+            lookup = load_lookup_table(root)
 
-    existing_rows_by_key = read_existing_rows(csv_path)
-    benchmarks = sorted(benchmarks_dir.glob("*.pkl"))
-    configs = all_configs(num_factories_sweep)
+        existing_rows_by_key = read_existing_rows(csv_path)
+        benchmarks = sorted(benchmarks_dir.glob("*.pkl"))
+        configs = all_configs(num_factories_sweep)
 
-    jobs: list[RunJob] = []
-    for benchmark_path in benchmarks:
-        benchmark_name = benchmark_path.name
-        circuit = load_benchmark(benchmark_path)
-        num_program_bits = infer_num_program_bits(circuit)
-        print(f"Queued benchmark: {benchmark_name} ({num_program_bits} program bits)")
-
-        for config in configs:
-            trials = args.num_trials if config.stochastic else 1
-            pending_trials: list[int] = []
-            seed_by_trial: list[int | None] = []
-            for trial in range(trials):
-                cache_key = (
-                    benchmark_name,
-                    config.model,
-                    config.rz_factory,
-                    config.t_factory_type or "",
-                    config.num_factories,
-                    trial,
-                )
-                cached_row = existing_rows_by_key.get(cache_key)
-                if cached_row is not None:
-                    cached_status = (cached_row.get("status") or "").lower()
-                    if cached_status == "ok":
-                        continue
-
-                seed_by_trial.append(
-                    run_seed(seed_root, "|".join(map(str, cache_key)))
-                    if config.stochastic
-                    else None
-                )
-                pending_trials.append(trial)
-
-            if len(pending_trials) == 0:
-                continue
-            jobs.append(
-                RunJob(
-                    benchmark_name=benchmark_name,
-                    benchmark_path=str(benchmark_path),
-                    num_program_bits=num_program_bits,
-                    config=config,
-                    trials=tuple(pending_trials),
-                    seed_by_trial=tuple(seed_by_trial),
-                    factory_distance=args.factory_distance,
-                )
+        jobs: list[RunJob] = []
+        for benchmark_path in benchmarks:
+            benchmark_name = benchmark_path.name
+            circuit = load_benchmark(benchmark_path)
+            num_program_bits = infer_num_program_bits(circuit)
+            print(
+                f"Queued benchmark: {benchmark_name} ({num_program_bits} program bits)"
             )
 
-    print(
-        f"Executing {len(jobs)} uncached/retry jobs with {args.parallel_cores} workers "
-        f"(seed={seed_root}, sweep={num_factories_sweep})"
-    )
-    new_rows: list[dict[str, Any]] = []
-    if len(jobs) > 0:
-        if args.parallel_cores == 1 or len(jobs) == 1:
-            _init_worker(lookup)
-            for job in jobs:
-                new_rows.extend(run_job(job))
-        else:
-            max_workers = min(args.parallel_cores, len(jobs))
-            with ProcessPoolExecutor(
-                max_workers=max_workers,
-                initializer=_init_worker,
-                initargs=(lookup,),
-            ) as executor:
-                futures = [executor.submit(run_job, job) for job in jobs]
-                for future in as_completed(futures):
-                    new_rows.extend(future.result())
+            for config in configs:
+                trials = args.num_trials if config.stochastic else 1
+                pending_trials: list[int] = []
+                seed_by_trial: list[int | None] = []
+                for trial in range(trials):
+                    cache_key = (
+                        benchmark_name,
+                        config.model,
+                        config.rz_factory,
+                        config.t_factory_type or "",
+                        config.num_factories,
+                        trial,
+                    )
+                    cached_row = existing_rows_by_key.get(cache_key)
+                    if cached_row is not None:
+                        cached_status = (cached_row.get("status") or "").lower()
+                        if cached_status == "ok":
+                            continue
 
-    merged_rows_by_key: dict[tuple[str, str, str, str, int, int], dict[str, Any]] = {
-        key: dict(value) for key, value in existing_rows_by_key.items()
-    }
-    for row in new_rows:
-        merged_rows_by_key[row_cache_key(row)] = row
+                    seed_by_trial.append(
+                        run_seed(seed_root, "|".join(map(str, cache_key)))
+                        if config.stochastic
+                        else None
+                    )
+                    pending_trials.append(trial)
 
-    all_rows = list(merged_rows_by_key.values())
-    all_rows.sort(key=row_sort_key)
-    write_rows(csv_path, all_rows)
+                if len(pending_trials) == 0:
+                    continue
+                jobs.append(
+                    RunJob(
+                        benchmark_name=benchmark_name,
+                        benchmark_path=str(benchmark_path),
+                        num_program_bits=num_program_bits,
+                        config=config,
+                        trials=tuple(pending_trials),
+                        seed_by_trial=tuple(seed_by_trial),
+                        factory_distance=args.factory_distance,
+                    )
+                )
+
+        print(
+            f"Executing {len(jobs)} uncached/retry jobs with {args.parallel_cores} workers "
+            f"(seed={seed_root}, sweep={num_factories_sweep})"
+        )
+        new_rows: list[dict[str, Any]] = []
+        if len(jobs) > 0:
+            if args.parallel_cores == 1 or len(jobs) == 1:
+                _init_worker(lookup)
+                for job in jobs:
+                    new_rows.extend(run_job(job))
+            else:
+                max_workers = min(args.parallel_cores, len(jobs))
+                with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    initializer=_init_worker,
+                    initargs=(lookup,),
+                ) as executor:
+                    futures = [executor.submit(run_job, job) for job in jobs]
+                    for future in as_completed(futures):
+                        new_rows.extend(future.result())
+
+        merged_rows_by_key: dict[
+            tuple[str, str, str, str, int, int], dict[str, Any]
+        ] = {key: dict(value) for key, value in existing_rows_by_key.items()}
+        for row in new_rows:
+            merged_rows_by_key[row_cache_key(row)] = row
+
+        all_rows = list(merged_rows_by_key.values())
+        all_rows.sort(key=row_sort_key)
+        write_rows(csv_path, all_rows)
+
     plot_from_csv(csv_path, outputs_dir)
 
     print(f"Wrote CSV: {csv_path}")
