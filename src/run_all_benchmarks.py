@@ -37,6 +37,7 @@ from matplotlib.patches import Patch
 
 T_FACTORY_TYPES = ("Distillation", "Cultivation", "ColourCode")
 INJEQT_SWEEP_FACTORIES = ("Superconducting", "NeutralAtom", "STAR")
+TECHNOLOGIES = ("Superconducting", "NeutralAtom")
 STATS_COLUMNS = [
     "#in_modules",
     "#inter_modules",
@@ -333,7 +334,7 @@ def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
 
     for t in T_FACTORY_TYPES:
         for num_factories in num_factories_sweep:
-            for rz_factory in INJEQT_SWEEP_FACTORIES:
+            for rz_factory in TECHNOLOGIES:
                 configs.append(
                     RunConfig(
                         model="INJEQT",
@@ -344,6 +345,17 @@ def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
                         num_factories=num_factories,
                     )
                 )
+    for num_factories in num_factories_sweep:
+        configs.append(
+            RunConfig(
+                model="INJEQT",
+                policy=f"INJEQT_{num_factories}",
+                rz_factory="STAR",
+                t_factory_type=None,
+                stochastic=True,
+                num_factories=num_factories,
+            )
+        )
 
     return configs
 
@@ -372,6 +384,8 @@ def read_existing_rows(
 
     latest: dict[tuple[str, str, str, str, int, int], dict[str, str]] = {}
     for row in rows:
+        if row.get("rz_factory") == "STAR" and row.get("t_factory_type", "") != "":
+            continue
         try:
             latest[row_cache_key(row)] = row
         except (KeyError, ValueError):
@@ -480,7 +494,7 @@ def _collect_sweep_series(
     metric: str,
     tdg_t_factory_type: str,
     candidate_rz_factory: str,
-    candidate_t_factory_type: str,
+    candidate_t_factory_type: str | None,
 ) -> dict[int, dict[str, list[float]]]:
     baseline = _build_tdg_baseline_map(rows, metric, tdg_t_factory_type)
     series: dict[int, dict[str, list[float]]] = {}
@@ -491,7 +505,10 @@ def _collect_sweep_series(
             continue
         if row.get("rz_factory") != candidate_rz_factory:
             continue
-        if row.get("t_factory_type") != candidate_t_factory_type:
+        if candidate_t_factory_type is None:
+            if row.get("t_factory_type", "") != "":
+                continue
+        elif row.get("t_factory_type") != candidate_t_factory_type:
             continue
         if not row.get("policy", "").startswith("INJEQT_"):
             continue
@@ -644,7 +661,7 @@ def _plot_grouped_boxplot(
         ha="right",
     )
     plt.xlabel("Benchmark")
-    plt.ylabel("Improvement over TDG ($\times$)")
+    plt.ylabel(r"Improvement over TDG ($\times$)")
     plt.title(title)
     plt.legend(handles=legend_handles)
     plt.tight_layout()
@@ -723,7 +740,9 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
                     metric=metric,
                     tdg_t_factory_type=t_factory_type,
                     candidate_rz_factory=rz_factory,
-                    candidate_t_factory_type=t_factory_type,
+                    candidate_t_factory_type=(
+                        None if rz_factory == "STAR" else t_factory_type
+                    ),
                 )
                 sweep_series_by_factory[rz_factory] = sweep
                 best, _ = _compute_injeqt_star_series(sweep)

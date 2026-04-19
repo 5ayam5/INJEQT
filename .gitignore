@@ -3,3 +3,4 @@ Icon?
 __pycache__
 /meas_lookup_table.pkl
 /sinter_outputs
+/outputs/*_old
