@@ -828,12 +828,6 @@ def main() -> None:
     parser.add_argument("--lookup-pkl", default=None)
     parser.add_argument("--factory-distance", default=7, type=int)
     parser.add_argument(
-        "--num-factories",
-        default=1,
-        type=int,
-        help="Factory count for STAR policy (default: 1).",
-    )
-    parser.add_argument(
         "--num-factories-sweep",
         default="1-10",
         type=str,
@@ -873,8 +867,6 @@ def main() -> None:
 
     if args.num_trials <= 0:
         raise ValueError("--num-trials must be a positive integer.")
-    if args.num_factories <= 0:
-        raise ValueError("--num-factories must be a positive integer.")
     if args.parallel_cores <= 0:
         raise ValueError("--parallel-cores must be a positive integer.")
     if args.synthesis_epsilon is not None and args.synthesis_epsilon <= 0:
