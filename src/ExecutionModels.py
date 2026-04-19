@@ -156,17 +156,27 @@ class DistillationFactory(TFactory, SurfaceCodeFactory):
 @dataclass(frozen=True)
 class CultivationFactory(TFactory, SurfaceCodeFactory):
     rng: Generator = field(default_factory=default_rng)
-    d_colour_code: int = 3
-    r1: int = 3
+    d_colour_code: int = 5
+    r1: int = d_colour_code
     r2: int = 5
+
+    @property
+    def _exception(self: Self) -> float:
+        raise NotImplementedError(
+            f"Synthesis logical error rate for d_colour_code={self.d_colour_code} "
+            f"and physical_qubit_error_rate={self.physical_qubit_error_rate} "
+            "is not available."
+        )
 
     @property
     @abstractmethod
     @override
     def synthesis_logical_error_rate(self: Self) -> float:
-        raise NotImplementedError(
-            "CultivationFactory.synthesis_logical_error_rate is not implemented yet."
-        )
+        return {
+            1e-3: 3e-6 if self.d_colour_code == 3 else 2e-9,
+            5e-4: 4e-11 if self.d_colour_code == 5 else self._exception,
+            1e-4: 6e-15 if self.d_colour_code == 5 else self._exception,
+        }[self.physical_qubit_error_rate]
 
     @property
     @override

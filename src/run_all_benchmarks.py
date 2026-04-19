@@ -193,8 +193,11 @@ def build_execution_model(
         if config.t_factory_type == "Distillation":
             factory_model = DistillationFactory(factory_distance)
         elif config.t_factory_type == "Cultivation":
+            required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
+            if required_d % 2 == 0:
+                required_d += 1
             factory_model = CultivationFactory(
-                factory_distance,
+                required_d,
                 rng=spawn_child_rng(run_rng),
             )
         elif config.t_factory_type == "ColourCode":
@@ -203,21 +206,28 @@ def build_execution_model(
             raise ValueError(f"Unknown T factory type: {config.t_factory_type}")
         return TDGExecutionModel(factory_model, num_modules)
 
+    effective_distance = factory_distance
+    if config.t_factory_type == "Cultivation":
+        required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
+        if required_d % 2 == 0:
+            required_d += 1
+        effective_distance = required_d
+
     if config.rz_factory == "Superconducting":
         factory_model = SuperconductingSurfaceCodeFactory(
-            factory_distance,
+            effective_distance,
             t_factory_type=config.t_factory_type or "Distillation",
             rng=spawn_child_rng(run_rng),
         )
     elif config.rz_factory == "NeutralAtom":
         factory_model = NeutralAtomSurfaceCodeFactory(
-            factory_distance,
+            effective_distance,
             t_factory_type=config.t_factory_type or "Distillation",
             rng=spawn_child_rng(run_rng),
         )
     elif config.rz_factory == "STAR":
         factory_model = STARSurfaceCodeFactory(
-            factory_distance,
+            effective_distance,
             rng=spawn_child_rng(run_rng),
         )
     else:
@@ -402,9 +412,9 @@ def _relative_improvement(
     baseline_value: float,
     candidate_value: float,
 ) -> float | None:
-    if baseline_value <= 0:
+    if baseline_value <= 0 or candidate_value <= 0:
         return None
-    return (baseline_value - candidate_value) / baseline_value * 100.0
+    return baseline_value / candidate_value
 
 
 def _build_tdg_baseline_map(
@@ -566,6 +576,7 @@ def _plot_grouped_boxplot(
     legend_handles: list[Patch] = []
 
     plt.figure(figsize=(max(12, len(benchmarks) * 0.6), 4))
+    plt.yscale("log")
     for idx, label in enumerate(labels):
         benchmark_map = series_data[label]
         offset = (idx - (len(labels) - 1) / 2.0) * width
@@ -625,7 +636,7 @@ def _plot_grouped_boxplot(
         plt.close()
         return
 
-    plt.axhline(0.0, color="black", linewidth=1, linestyle="--")
+    plt.axhline(1.0, color="black", linewidth=1, linestyle="--")
     plt.xticks(
         [*x_positions, avg_x_position],
         [*benchmark_labels, "Average"],
@@ -633,7 +644,7 @@ def _plot_grouped_boxplot(
         ha="right",
     )
     plt.xlabel("Benchmark")
-    plt.ylabel("Relative improvement over TDG (%)")
+    plt.ylabel("Improvement over TDG ($\times$)")
     plt.title(title)
     plt.legend(handles=legend_handles)
     plt.tight_layout()
@@ -647,6 +658,7 @@ def _plot_sweep_summary(
     output_path: Path,
 ) -> None:
     plt.figure(figsize=(6, 4))
+    plt.yscale("log")
     has_data = False
     colors = {
         "Superconducting": "#4472C4",
@@ -687,9 +699,9 @@ def _plot_sweep_summary(
         plt.close()
         return
 
-    plt.axhline(0.0, color="black", linewidth=1, linestyle="--")
+    plt.axhline(1.0, color="black", linewidth=1, linestyle="--")
     plt.xlabel("Number of INJEQT factories")
-    plt.ylabel("Global mean relative improvement over TDG (%)")
+    plt.ylabel("Global mean improvement over TDG (x)")
     plt.title(title)
     plt.legend()
     plt.tight_layout()
@@ -733,7 +745,9 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
                 benchmarks=benchmark_order,
                 benchmark_labels=benchmark_labels,
                 series_data=series_data,
-                title=(f"{metric}: Relative improvement over TDG ({t_factory_type})"),
+                title=(
+                    rf"{metric}: Improvement over TDG ($\times$) ({t_factory_type})"
+                ),
                 output_path=(
                     outputs_dir
                     / f"boxplot_relative_{metric}_vs_tdg_{t_factory_type.lower()}.png"

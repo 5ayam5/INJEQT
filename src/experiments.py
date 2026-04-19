@@ -428,7 +428,7 @@ def main():
     args = parser.parse_args()
     root_rng = default_rng(args.seed)
 
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parent.parent
 
     if args.lookup_pkl is not None:
         with open(Path(args.lookup_pkl).expanduser().resolve(), "rb") as f:
@@ -448,15 +448,26 @@ def main():
         execution_model = TDGExecutionModel(factory_model, num_modules)
 
     elif factory_type == "Cultivation":
+        required_d = max(args.factory_distance, 2 * CultivationFactory.d_colour_code)
+        if required_d % 2 == 0:
+            required_d += 1
         factory_model = CultivationFactory(
-            args.factory_distance,
+            required_d,
             rng=spawn_child_rng(root_rng),
         )
         execution_model = TDGExecutionModel(factory_model, num_modules)
 
     elif factory_type == "SuperconductingRz":
+        effective_distance = args.factory_distance
+        if args.t_factory_type == "Cultivation":
+            required_d = max(
+                args.factory_distance, 2 * CultivationFactory.d_colour_code
+            )
+            if required_d % 2 == 0:
+                required_d += 1
+            effective_distance = required_d
         factory_model = SuperconductingSurfaceCodeFactory(
-            args.factory_distance,
+            effective_distance,
             t_factory_type=args.t_factory_type,
             rng=spawn_child_rng(root_rng),
         )
@@ -468,8 +479,16 @@ def main():
         )
 
     elif factory_type == "NeutralAtomRz":
+        effective_distance = args.factory_distance
+        if args.t_factory_type == "Cultivation":
+            required_d = max(
+                args.factory_distance, 2 * CultivationFactory.d_colour_code
+            )
+            if required_d % 2 == 0:
+                required_d += 1
+            effective_distance = required_d
         factory_model = NeutralAtomSurfaceCodeFactory(
-            args.factory_distance,
+            effective_distance,
             t_factory_type=args.t_factory_type,
             rng=spawn_child_rng(root_rng),
         )
@@ -481,8 +500,16 @@ def main():
         )
 
     elif factory_type == "STARRz":
+        effective_distance = args.factory_distance
+        if args.t_factory_type == "Cultivation":
+            required_d = max(
+                args.factory_distance, 2 * CultivationFactory.d_colour_code
+            )
+            if required_d % 2 == 0:
+                required_d += 1
+            effective_distance = required_d
         factory_model = STARSurfaceCodeFactory(
-            args.factory_distance,
+            effective_distance,
             rng=spawn_child_rng(root_rng),
         )
         execution_model = INJEQTExecutionModel(
