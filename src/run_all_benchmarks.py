@@ -17,15 +17,17 @@ from ExecutionModels import (
     CultivationFactory,
     DistillationFactory,
     INJEQTExecutionModel,
-    NeutralAtomSurfaceCodeFactory,
+    LatticeSurgerySurfaceCodeFactory,
     STARSurfaceCodeFactory,
-    SuperconductingSurfaceCodeFactory,
     TDGExecutionModel,
+    TransversalSurfaceCodeFactory,
 )
 from experiments import (
     NUM_LOGICAL_QUBITS_PER_MODULE,
     CompiledCirc,
     GrossCodeErrorModel,
+    compute_synthesis_epsilon,
+    count_noncliffords,
     evaluate_circuit,
     load_lookup_table,
 )
@@ -36,8 +38,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
 T_FACTORY_TYPES = ("Distillation", "Cultivation", "ColourCode")
-INJEQT_SWEEP_FACTORIES = ("Superconducting", "NeutralAtom", "STAR")
-TECHNOLOGIES = ("Superconducting", "NeutralAtom")
+INJEQT_SWEEP_FACTORIES = ("LatticeSurgery", "Transversal", "STAR")
+TECHNOLOGIES = ("LatticeSurgery", "Transversal")
 STATS_COLUMNS = [
     "#in_modules",
     "#inter_modules",
@@ -71,6 +73,7 @@ BASE_COLUMNS = [
     "num_factories",
     "trial",
     "seed",
+    "synthesis_epsilon",
     "status",
     "error",
 ]
@@ -95,6 +98,7 @@ class RunJob:
     trials: tuple[int, ...]
     seed_by_trial: tuple[int | None, ...]
     factory_distance: int
+    synthesis_epsilon: float
 
 
 _LOOKUP_TABLE: dict[int, int] | None = None
@@ -189,20 +193,28 @@ def build_execution_model(
     factory_distance: int,
     run_rng: Generator,
     num_modules: int,
+    synthesis_epsilon: float,
 ):
     if config.model == "TDG":
         if config.t_factory_type == "Distillation":
-            factory_model = DistillationFactory(factory_distance)
+            factory_model = DistillationFactory(
+                factory_distance,
+                synthesis_epsilon=synthesis_epsilon,
+            )
         elif config.t_factory_type == "Cultivation":
             required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
             if required_d % 2 == 0:
                 required_d += 1
             factory_model = CultivationFactory(
                 required_d,
+                synthesis_epsilon=synthesis_epsilon,
                 rng=spawn_child_rng(run_rng),
             )
         elif config.t_factory_type == "ColourCode":
-            factory_model = ColourCodeFactory(factory_distance)
+            factory_model = ColourCodeFactory(
+                factory_distance,
+                synthesis_epsilon=synthesis_epsilon,
+            )
         else:
             raise ValueError(f"Unknown T factory type: {config.t_factory_type}")
         return TDGExecutionModel(factory_model, num_modules)
@@ -214,16 +226,18 @@ def build_execution_model(
             required_d += 1
         effective_distance = required_d
 
-    if config.rz_factory == "Superconducting":
-        factory_model = SuperconductingSurfaceCodeFactory(
+    if config.rz_factory == "LatticeSurgery":
+        factory_model = LatticeSurgerySurfaceCodeFactory(
             effective_distance,
             t_factory_type=config.t_factory_type or "Distillation",
+            synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(run_rng),
         )
-    elif config.rz_factory == "NeutralAtom":
-        factory_model = NeutralAtomSurfaceCodeFactory(
+    elif config.rz_factory == "Transversal":
+        factory_model = TransversalSurfaceCodeFactory(
             effective_distance,
             t_factory_type=config.t_factory_type or "Distillation",
+            synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(run_rng),
         )
     elif config.rz_factory == "STAR":
@@ -250,6 +264,7 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     first_trial_failed = False
     first_trial_error = ""
+    error_model = GrossCodeErrorModel()
 
     for index, trial in enumerate(job.trials):
         seed = job.seed_by_trial[index]
@@ -263,6 +278,7 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
             "num_factories": job.config.num_factories,
             "trial": trial,
             "seed": seed if seed is not None else "",
+            "synthesis_epsilon": job.synthesis_epsilon,
             "status": "ok",
             "error": "",
         }
@@ -283,12 +299,13 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
                 factory_distance=job.factory_distance,
                 run_rng=run_rng,
                 num_modules=num_modules,
+                synthesis_epsilon=job.synthesis_epsilon,
             )
             stats = evaluate_circuit(
                 circuit=circuit,
                 lookup=_LOOKUP_TABLE,
                 num_program_bits=job.num_program_bits,
-                error_model=GrossCodeErrorModel(),
+                error_model=error_model,
                 execution_model=execution_model,
             )
             row.update(stats)
@@ -360,7 +377,7 @@ def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
     return configs
 
 
-def row_cache_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int]:
+def row_cache_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int, str]:
     num_factories = int(row.get("num_factories", 0) or 0)
     trial = int(row["trial"])
     return (
@@ -370,19 +387,20 @@ def row_cache_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int]:
         str(row.get("t_factory_type", "") or ""),
         num_factories,
         trial,
+        str(row.get("synthesis_epsilon", "") or ""),
     )
 
 
 def read_existing_rows(
     csv_path: Path,
-) -> dict[tuple[str, str, str, str, int, int], dict[str, str]]:
+) -> dict[tuple[str, str, str, str, int, int, str], dict[str, str]]:
     if not csv_path.exists():
         return {}
 
     with open(csv_path, newline="") as f:
         rows = list(DictReader(f))
 
-    latest: dict[tuple[str, str, str, str, int, int], dict[str, str]] = {}
+    latest: dict[tuple[str, str, str, str, int, int, str], dict[str, str]] = {}
     for row in rows:
         if row.get("rz_factory") == "STAR" and row.get("t_factory_type", "") != "":
             continue
@@ -404,7 +422,7 @@ def write_rows(csv_path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(payload)
 
 
-def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int]:
+def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int, str]:
     return (
         str(row["benchmark"]),
         str(row["model"]),
@@ -412,6 +430,7 @@ def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int]:
         str(row.get("t_factory_type", "") or ""),
         int(row.get("num_factories", 0) or 0),
         int(row["trial"]),
+        str(row.get("synthesis_epsilon", "") or ""),
     )
 
 
@@ -593,7 +612,7 @@ def _plot_grouped_boxplot(
     legend_handles: list[Patch] = []
 
     plt.figure(figsize=(max(12, len(benchmarks) * 0.6), 4))
-    plt.yscale("log")
+    max_value, min_value = float("-inf"), float("inf")
     for idx, label in enumerate(labels):
         benchmark_map = series_data[label]
         offset = (idx - (len(labels) - 1) / 2.0) * width
@@ -610,6 +629,11 @@ def _plot_grouped_boxplot(
 
         if len(data) == 0:
             continue
+
+        max_value, min_value = (
+            max(max_value, max(all_values)),
+            min(min_value, min(all_values)),
+        )
 
         color = colors[idx % len(colors)]
         boxplot = plt.boxplot(
@@ -661,6 +685,10 @@ def _plot_grouped_boxplot(
         ha="right",
     )
     plt.xlabel("Benchmark")
+
+    if max_value > 0 and min_value > 0 and max_value / min_value >= 10:
+        plt.yscale("log")
+
     plt.ylabel(r"Improvement over TDG ($\times$)")
     plt.title(title)
     plt.legend(handles=legend_handles)
@@ -675,14 +703,14 @@ def _plot_sweep_summary(
     output_path: Path,
 ) -> None:
     plt.figure(figsize=(6, 4))
-    plt.yscale("log")
     has_data = False
     colors = {
-        "Superconducting": "#4472C4",
-        "NeutralAtom": "#ED7D31",
+        "LatticeSurgery": "#4472C4",
+        "Transversal": "#ED7D31",
         "STAR": "#70AD47",
     }
 
+    max_value, min_value = float("-inf"), float("inf")
     for rz_factory, series in sweep_series_by_factory.items():
         x_values: list[int] = []
         y_values: list[float] = []
@@ -697,6 +725,10 @@ def _plot_sweep_summary(
             y_values.append(sum(values) / len(values))
         if len(x_values) == 0:
             continue
+        max_value, min_value = (
+            max(max_value, max(y_values)),
+            min(min_value, min(y_values)),
+        )
         has_data = True
         plt.plot(
             x_values,
@@ -718,6 +750,10 @@ def _plot_sweep_summary(
 
     plt.axhline(1.0, color="black", linewidth=1, linestyle="--")
     plt.xlabel("Number of INJEQT factories")
+
+    if max_value > 0 and min_value > 0 and max_value / min_value >= 10:
+        plt.yscale("log")
+
     plt.ylabel("Global mean improvement over TDG (x)")
     plt.title(title)
     plt.legend()
@@ -822,6 +858,12 @@ def main() -> None:
         help="Optional seed for reproducible per-run RNG streams.",
     )
     parser.add_argument(
+        "--synthesis-epsilon",
+        default=None,
+        type=float,
+        help="Optional synthesis precision (epsilon). If omitted, computed by compute_synthesis_epsilon().",
+    )
+    parser.add_argument(
         "--plot-only",
         action="store_true",
         help="Only generate plots from existing CSV data, "
@@ -835,6 +877,8 @@ def main() -> None:
         raise ValueError("--num-factories must be a positive integer.")
     if args.parallel_cores <= 0:
         raise ValueError("--parallel-cores must be a positive integer.")
+    if args.synthesis_epsilon is not None and args.synthesis_epsilon <= 0:
+        raise ValueError("--synthesis-epsilon must be positive when provided.")
     num_factories_sweep = parse_num_factories_sweep(args.num_factories_sweep)
 
     root = Path(__file__).resolve().parent.parent
@@ -867,6 +911,13 @@ def main() -> None:
             benchmark_name = benchmark_path.name
             circuit = load_benchmark(benchmark_path)
             num_program_bits = infer_num_program_bits(circuit)
+            num_noncliffords = count_noncliffords(circuit)
+            resolved_synthesis_epsilon = args.synthesis_epsilon
+            if resolved_synthesis_epsilon is None:
+                resolved_synthesis_epsilon = compute_synthesis_epsilon(
+                    GrossCodeErrorModel(),
+                    num_noncliffords,
+                )
             print(
                 f"Queued benchmark: {benchmark_name} ({num_program_bits} program bits)"
             )
@@ -883,6 +934,7 @@ def main() -> None:
                         config.t_factory_type or "",
                         config.num_factories,
                         trial,
+                        str(resolved_synthesis_epsilon),
                     )
                     cached_row = existing_rows_by_key.get(cache_key)
                     if cached_row is not None:
@@ -908,6 +960,7 @@ def main() -> None:
                         trials=tuple(pending_trials),
                         seed_by_trial=tuple(seed_by_trial),
                         factory_distance=args.factory_distance,
+                        synthesis_epsilon=resolved_synthesis_epsilon,
                     )
                 )
 
@@ -933,7 +986,7 @@ def main() -> None:
                         new_rows.extend(future.result())
 
         merged_rows_by_key: dict[
-            tuple[str, str, str, str, int, int], dict[str, Any]
+            tuple[str, str, str, str, int, int, str], dict[str, Any]
         ] = {key: dict(value) for key, value in existing_rows_by_key.items()}
         for row in new_rows:
             merged_rows_by_key[row_cache_key(row)] = row

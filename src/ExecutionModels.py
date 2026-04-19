@@ -56,14 +56,15 @@ def get_or_compute_cultivation_setup(
     CULTIVATION_SETUP_CACHE[key] = setup
     return setup
 
+
 """
 Different kinds of factories
 1. T Factory
     a. Distillation
     b. Cultivation
 2. Rz Factory
-    a. Superconducting qubits (operates via lattice surgery)
-    b. Neutral atoms (operates via transversal gates and correlated decoding)
+    a. LatticeSurgery qubits (operates via lattice surgery)
+    b. Transversal qubits (operates via transversal gates and correlated decoding)
     a. STAR/transversal synthesis of Rz states
     c. Color code factory (can prepare T and Rz states directly)
 """
@@ -536,6 +537,7 @@ class RzFactory(Factory):
 @dataclass(frozen=True)
 class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
     t_factory_type: str = "Distillation"
+    synthesis_epsilon: float = 1e-10
     rng: Generator = field(default_factory=default_rng)
     _cached_t_factory: TFactory = field(init=False, repr=False)
 
@@ -544,17 +546,20 @@ class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
             cached = DistillationFactory(
                 d_factory=self.d_factory,
                 physical_qubit_error_rate=self.physical_qubit_error_rate,
+                synthesis_epsilon=self.synthesis_epsilon,
             )
         elif self.t_factory_type == "Cultivation":
             cached = CultivationFactory(
                 d_factory=self.d_factory,
                 physical_qubit_error_rate=self.physical_qubit_error_rate,
+                synthesis_epsilon=self.synthesis_epsilon,
                 rng=self.rng,
             )
         elif self.t_factory_type == "ColourCode":
             cached = ColourCodeFactory(
                 d_factory=self.d_factory,
                 physical_qubit_error_rate=self.physical_qubit_error_rate,
+                synthesis_epsilon=self.synthesis_epsilon,
             )
         else:
             raise ValueError(f"Unknown T factory type: {self.t_factory_type}")
@@ -585,7 +590,7 @@ class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
 
 
 @dataclass(frozen=True)
-class SuperconductingSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
+class LatticeSurgerySurfaceCodeFactory(TtoRzSurfaceCodeFactory):
     @property
     @override
     def synthesis_logical_error_rate(self: Self) -> float:
@@ -609,7 +614,7 @@ class SuperconductingSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
 
 
 @dataclass(frozen=True)
-class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
+class TransversalSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
     @property
     @override
     def synthesis_logical_error_rate(self: Self) -> float:
@@ -621,9 +626,9 @@ class NeutralAtomSurfaceCodeFactory(TtoRzSurfaceCodeFactory):
     @property
     @override
     def factory_prep_time(self: Self) -> float:
-        t_prep_time = self.t_factory.factory_prep_time
         return self.t_factory.num_t_injections * (
-            t_prep_time + self.factory_syndrome_extraction_cycles
+            self.t_factory.factory_prep_time
+            + 2 * self.factory_syndrome_extraction_cycles
         )
 
     @property
@@ -646,9 +651,9 @@ class STARSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
         s1 = self._circuit_success_probability(16)
         sm = (1 - self.physical_qubit_error_rate) ** 4
         s2 = self._circuit_success_probability(12)
-        m_theta_success_probability = s1 * sm * (
-            s2 * sm + (1 - s2) * (1 - sm) / 15
-        ) + (1 - s1) * (1 - sm) / 15 * (
+        m_theta_success_probability = s1 * sm * (s2 * sm + (1 - s2) * (1 - sm) / 15) + (
+            1 - s1
+        ) * (1 - sm) / 15 * (
             (1 - s2) / 15 * sm + (s2 + 14 * (1 - s2) / 15) * (1 - sm) / 15
         )
         log_expansion_success_probability = (

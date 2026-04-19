@@ -19,10 +19,10 @@ from ExecutionModels import (
     DistillationFactory,
     ExecutionModel,
     INJEQTExecutionModel,
-    NeutralAtomSurfaceCodeFactory,
+    LatticeSurgerySurfaceCodeFactory,
     STARSurfaceCodeFactory,
-    SuperconductingSurfaceCodeFactory,
     TDGExecutionModel,
+    TransversalSurfaceCodeFactory,
 )
 
 RotationsType = list[
@@ -43,6 +43,26 @@ class GrossCodeErrorModel:
     in_cost: float = 10**-9
     inter_cost: float = 10**-7.3
     t_injection_cost: float = 10**-7.4
+
+
+def compute_synthesis_epsilon(
+    error_model: GrossCodeErrorModel,
+    num_noncliffords: int,
+) -> float:
+    return (
+        -10
+        * math.log10(error_model.t_injection_cost)
+        * error_model.t_injection_cost
+        / num_noncliffords
+    )
+
+
+def count_noncliffords(circuit: CompiledCirc) -> int:
+    return sum(
+        1
+        for operation in circuit.compiled_operations
+        if len(operation) >= 3 and operation[2] == "nonclifford"
+    )
 
 
 def build_lookup(measurements: list[dict]) -> dict[int, int]:
@@ -388,8 +408,8 @@ def main():
         choices=[
             "Distillation",
             "Cultivation",
-            "SuperconductingRz",
-            "NeutralAtomRz",
+            "LatticeSurgeryRz",
+            "TransversalRz",
             "STARRz",
         ],
         type=str,
@@ -425,7 +445,15 @@ def main():
         type=int,
         help="Optional RNG seed for stochastic factory/timing behavior.",
     )
+    parser.add_argument(
+        "--synthesis-epsilon",
+        default=None,
+        type=float,
+        help="Optional synthesis precision (epsilon). If omitted, computed by compute_synthesis_epsilon().",
+    )
     args = parser.parse_args()
+    if args.synthesis_epsilon is not None and args.synthesis_epsilon <= 0:
+        raise ValueError("--synthesis-epsilon must be positive when provided.")
     root_rng = default_rng(args.seed)
 
     root = Path(__file__).resolve().parent.parent
@@ -441,10 +469,20 @@ def main():
         circuit: CompiledCirc = pkl.load(f)
 
     num_modules = math.ceil(args.num_program_bits / NUM_LOGICAL_QUBITS_PER_MODULE)
+    error_model = GrossCodeErrorModel()
+    synthesis_epsilon = args.synthesis_epsilon
+    if synthesis_epsilon is None:
+        synthesis_epsilon = compute_synthesis_epsilon(
+            error_model,
+            count_noncliffords(circuit),
+        )
 
     factory_type = args.factory_type
     if factory_type == "Distillation":
-        factory_model = DistillationFactory(args.factory_distance)
+        factory_model = DistillationFactory(
+            args.factory_distance,
+            synthesis_epsilon=synthesis_epsilon,
+        )
         execution_model = TDGExecutionModel(factory_model, num_modules)
 
     elif factory_type == "Cultivation":
@@ -453,11 +491,12 @@ def main():
             required_d += 1
         factory_model = CultivationFactory(
             required_d,
+            synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(root_rng),
         )
         execution_model = TDGExecutionModel(factory_model, num_modules)
 
-    elif factory_type == "SuperconductingRz":
+    elif factory_type == "LatticeSurgeryRz":
         effective_distance = args.factory_distance
         if args.t_factory_type == "Cultivation":
             required_d = max(
@@ -466,9 +505,10 @@ def main():
             if required_d % 2 == 0:
                 required_d += 1
             effective_distance = required_d
-        factory_model = SuperconductingSurfaceCodeFactory(
+        factory_model = LatticeSurgerySurfaceCodeFactory(
             effective_distance,
             t_factory_type=args.t_factory_type,
+            synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(root_rng),
         )
         execution_model = INJEQTExecutionModel(
@@ -478,7 +518,7 @@ def main():
             rng=spawn_child_rng(root_rng),
         )
 
-    elif factory_type == "NeutralAtomRz":
+    elif factory_type == "TransversalRz":
         effective_distance = args.factory_distance
         if args.t_factory_type == "Cultivation":
             required_d = max(
@@ -487,9 +527,10 @@ def main():
             if required_d % 2 == 0:
                 required_d += 1
             effective_distance = required_d
-        factory_model = NeutralAtomSurfaceCodeFactory(
+        factory_model = TransversalSurfaceCodeFactory(
             effective_distance,
             t_factory_type=args.t_factory_type,
+            synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(root_rng),
         )
         execution_model = INJEQTExecutionModel(
@@ -526,7 +567,7 @@ def main():
         circuit=circuit,
         lookup=lookup,
         num_program_bits=args.num_program_bits,
-        error_model=GrossCodeErrorModel(),
+        error_model=error_model,
         execution_model=execution_model,
     )
 
