@@ -37,7 +37,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-T_FACTORY_TYPES = ("Distillation", "Cultivation", "ColourCode")
+T_FACTORY_TYPES = (
+    "Distillation",
+    "Cultivation",
+)  # FIXME: add colour code back once implemented
 INJEQT_SWEEP_FACTORIES = ("LatticeSurgery", "Transversal", "STAR")
 TECHNOLOGIES = ("LatticeSurgery", "Transversal")
 STATS_COLUMNS = [
@@ -77,6 +80,29 @@ BASE_COLUMNS = [
     "status",
     "error",
 ]
+
+PLOT_DPI = 200
+NO_DATA_TEXT = "No valid data"
+SERIES_COLORS = (
+    "#4472C4",
+    "#ED7D31",
+    "#70AD47",
+    "#A5A5A5",
+    "#5B9BD5",
+    "#FFC000",
+    "#264478",
+    "#9E480E",
+)
+RZ_FACTORY_COLORS = {
+    "LatticeSurgery": SERIES_COLORS[0],
+    "Transversal": SERIES_COLORS[1],
+    "STAR": SERIES_COLORS[2],
+}
+MODEL_COLORS = {
+    "TDG": SERIES_COLORS[0],
+    "INJEQT": SERIES_COLORS[1],
+}
+RZ_FRACTION_MODELS = ("TDG", "INJEQT")
 
 
 @dataclass(frozen=True)
@@ -156,14 +182,7 @@ def parse_num_factories_sweep(spec: str) -> list[int]:
             raise ValueError("All num-factories values must be positive integers.")
         values.append(value)
 
-    deduped: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        if value in seen:
-            continue
-        deduped.append(value)
-        seen.add(value)
-    return deduped
+    return list(dict.fromkeys(values))
 
 
 def benchmark_display_label(benchmark_name: str, fallback_n: int | None = None) -> str:
@@ -188,6 +207,17 @@ def benchmark_display_label(benchmark_name: str, fallback_n: int | None = None) 
     return base
 
 
+def _compute_effective_distance(
+    factory_distance: int, t_factory_type: str | None
+) -> int:
+    if t_factory_type == "Cultivation":
+        required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
+        if required_d % 2 == 0:
+            required_d += 1
+        return required_d
+    return factory_distance
+
+
 def build_execution_model(
     config: RunConfig,
     factory_distance: int,
@@ -195,6 +225,10 @@ def build_execution_model(
     num_modules: int,
     synthesis_epsilon: float,
 ):
+    effective_distance = _compute_effective_distance(
+        factory_distance, config.t_factory_type
+    )
+
     if config.model == "TDG":
         if config.t_factory_type == "Distillation":
             factory_model = DistillationFactory(
@@ -202,11 +236,8 @@ def build_execution_model(
                 synthesis_epsilon=synthesis_epsilon,
             )
         elif config.t_factory_type == "Cultivation":
-            required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
-            if required_d % 2 == 0:
-                required_d += 1
             factory_model = CultivationFactory(
-                required_d,
+                effective_distance,
                 synthesis_epsilon=synthesis_epsilon,
                 rng=spawn_child_rng(run_rng),
             )
@@ -218,13 +249,6 @@ def build_execution_model(
         else:
             raise ValueError(f"Unknown T factory type: {config.t_factory_type}")
         return TDGExecutionModel(factory_model, num_modules)
-
-    effective_distance = factory_distance
-    if config.t_factory_type == "Cultivation":
-        required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
-        if required_d % 2 == 0:
-            required_d += 1
-        effective_distance = required_d
 
     if config.rz_factory == "LatticeSurgery":
         factory_model = LatticeSurgerySurfaceCodeFactory(
@@ -262,8 +286,8 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
 
     circuit = load_benchmark(Path(job.benchmark_path))
     rows: list[dict[str, Any]] = []
-    first_trial_failed = False
-    first_trial_error = ""
+    trial_failed = False
+    trial_error = ""
     error_model = GrossCodeErrorModel()
 
     for index, trial in enumerate(job.trials):
@@ -283,10 +307,10 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
             "error": "",
         }
 
-        if first_trial_failed:
+        if trial_failed:
             row["status"] = "skipped"
             row["error"] = (
-                f"Skipped because first trial in this job failed: {first_trial_error}"
+                f"Skipped because {index - 1} trial in this job failed: {trial_error}"
             )
             rows.append(row)
             continue
@@ -318,9 +342,8 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
         ) as exc:
             row["status"] = "error"
             row["error"] = f"{type(exc).__name__}: {exc}"
-            if index == 0:
-                first_trial_failed = True
-                first_trial_error = row["error"]
+            trial_failed = True
+            trial_error = row["error"]
 
         rows.append(row)
 
@@ -470,6 +493,27 @@ def _build_tdg_baseline_map(
     return baseline
 
 
+def _filter_candidate_rows(
+    rows: list[dict[str, str]],
+    model: str,
+    rz_factory: str,
+    t_factory_type: str | None,
+):
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        if row.get("model") != model:
+            continue
+        if row.get("rz_factory") != rz_factory:
+            continue
+        if t_factory_type is None:
+            if row.get("t_factory_type", "") != "":
+                continue
+        elif row.get("t_factory_type") != t_factory_type:
+            continue
+        yield row
+
+
 def _collect_relative_series(
     rows: list[dict[str, str]],
     metric: str,
@@ -479,19 +523,9 @@ def _collect_relative_series(
 ) -> dict[str, list[float]]:
     baseline = _build_tdg_baseline_map(rows, metric, tdg_t_factory_type)
     series: dict[str, list[float]] = {}
-    for row in rows:
-        if row.get("status") != "ok":
-            continue
-        if row.get("model") != "INJEQT":
-            continue
-        if row.get("rz_factory") != candidate_rz_factory:
-            continue
-        if candidate_t_factory_type is None:
-            if row.get("t_factory_type", "") != "":
-                continue
-        elif row.get("t_factory_type") != candidate_t_factory_type:
-            continue
-
+    for row in _filter_candidate_rows(
+        rows, "INJEQT", candidate_rz_factory, candidate_t_factory_type
+    ):
         benchmark = row["benchmark"]
         trial = int(row["trial"])
         raw_value = row.get(metric, "")
@@ -517,18 +551,9 @@ def _collect_sweep_series(
 ) -> dict[int, dict[str, list[float]]]:
     baseline = _build_tdg_baseline_map(rows, metric, tdg_t_factory_type)
     series: dict[int, dict[str, list[float]]] = {}
-    for row in rows:
-        if row.get("status") != "ok":
-            continue
-        if row.get("model") != "INJEQT":
-            continue
-        if row.get("rz_factory") != candidate_rz_factory:
-            continue
-        if candidate_t_factory_type is None:
-            if row.get("t_factory_type", "") != "":
-                continue
-        elif row.get("t_factory_type") != candidate_t_factory_type:
-            continue
+    for row in _filter_candidate_rows(
+        rows, "INJEQT", candidate_rz_factory, candidate_t_factory_type
+    ):
         if not row.get("policy", "").startswith("INJEQT_"):
             continue
 
@@ -578,6 +603,32 @@ def _compute_injeqt_star_series(
     return best_series, selected_num_factories
 
 
+def _save_no_data_plot(
+    title: str, output_path: Path, figsize: tuple[float, float]
+) -> None:
+    plt.figure(figsize=figsize)
+    plt.title(title)
+    plt.text(0.5, 0.5, NO_DATA_TEXT, ha="center", va="center")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=PLOT_DPI)
+    plt.close()
+
+
+def _save_current_plot(output_path: Path) -> None:
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=PLOT_DPI)
+    plt.close()
+
+
+def _should_use_log_scale(values: list[float]) -> bool:
+    if not values:
+        return False
+    min_value = min(values)
+    max_value = max(values)
+    return min_value > 0 and max_value / min_value >= 10
+
+
 def _plot_grouped_boxplot(
     benchmarks: list[str],
     benchmark_labels: list[str],
@@ -586,33 +637,26 @@ def _plot_grouped_boxplot(
     output_path: Path,
 ) -> None:
     if len(benchmarks) == 0 or len(series_data) == 0:
-        plt.figure(figsize=(10, 4))
-        plt.title(title)
-        plt.text(0.5, 0.5, "No valid data", ha="center", va="center")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=200)
-        plt.close()
+        _save_no_data_plot(title, output_path, figsize=(10, 4))
         return
 
     labels = list(series_data.keys())
-    colors = [
-        "#4472C4",
-        "#ED7D31",
-        "#70AD47",
-        "#A5A5A5",
-        "#5B9BD5",
-        "#FFC000",
-        "#264478",
-        "#9E480E",
-    ]
     x_positions = list(range(len(benchmarks)))
     avg_x_position = len(benchmarks)
     width = 0.75 / max(1, len(labels))
     legend_handles: list[Patch] = []
 
+    all_plot_values = [
+        v
+        for factory_data in series_data.values()
+        for benchmark_data in factory_data.values()
+        for v in benchmark_data
+    ]
+    if not all_plot_values:
+        _save_no_data_plot(title, output_path, figsize=(10, 4))
+        return
+
     plt.figure(figsize=(max(12, len(benchmarks) * 0.6), 4))
-    max_value, min_value = float("-inf"), float("inf")
     for idx, label in enumerate(labels):
         benchmark_map = series_data[label]
         offset = (idx - (len(labels) - 1) / 2.0) * width
@@ -630,12 +674,7 @@ def _plot_grouped_boxplot(
         if len(data) == 0:
             continue
 
-        max_value, min_value = (
-            max(max_value, max(all_values)),
-            min(min_value, min(all_values)),
-        )
-
-        color = colors[idx % len(colors)]
+        color = SERIES_COLORS[idx % len(SERIES_COLORS)]
         boxplot = plt.boxplot(
             data,
             positions=positions,
@@ -649,10 +688,10 @@ def _plot_grouped_boxplot(
                 "markeredgecolor": color,
                 "markersize": 5,
             },
-            medianprops={"color": "black", "linewidth": 1.2},
+            medianprops={"color": color, "linewidth": 1.2},
             whiskerprops={"color": color},
             capprops={"color": color},
-            boxprops={"edgecolor": "black"},
+            boxprops={"edgecolor": color},
         )
         for patch in boxplot["boxes"]:
             patch.set_facecolor(color)
@@ -664,20 +703,12 @@ def _plot_grouped_boxplot(
             average_value,
             width=width * 0.9,
             color=color,
-            edgecolor="black",
+            edgecolor=color,
             alpha=0.85,
         )
-        legend_handles.append(Patch(facecolor=color, edgecolor="black", label=label))
+        legend_handles.append(Patch(facecolor=color, edgecolor=color, label=label))
 
-    if len(legend_handles) == 0:
-        plt.text(0.5, 0.5, "No valid data", ha="center", va="center")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=200)
-        plt.close()
-        return
-
-    plt.axhline(1.0, color="black", linewidth=1, linestyle="--")
+    plt.axhline(1.0, linewidth=1, linestyle="--")
     plt.xticks(
         [*x_positions, avg_x_position],
         [*benchmark_labels, "Average"],
@@ -686,15 +717,13 @@ def _plot_grouped_boxplot(
     )
     plt.xlabel("Benchmark")
 
-    if max_value > 0 and min_value > 0 and max_value / min_value >= 10:
+    if _should_use_log_scale(all_plot_values):
         plt.yscale("log")
 
     plt.ylabel(r"Improvement over TDG ($\times$)")
     plt.title(title)
     plt.legend(handles=legend_handles)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=200)
-    plt.close()
+    _save_current_plot(output_path)
 
 
 def _plot_sweep_summary(
@@ -702,15 +731,11 @@ def _plot_sweep_summary(
     title: str,
     output_path: Path,
 ) -> None:
-    plt.figure(figsize=(6, 4))
     has_data = False
-    colors = {
-        "LatticeSurgery": "#4472C4",
-        "Transversal": "#ED7D31",
-        "STAR": "#70AD47",
-    }
 
-    max_value, min_value = float("-inf"), float("inf")
+    all_y_values: list[float] = []
+    factory_plots: list[tuple[str, list[int], list[float]]] = []
+
     for rz_factory, series in sweep_series_by_factory.items():
         x_values: list[int] = []
         y_values: list[float] = []
@@ -722,52 +747,171 @@ def _plot_sweep_summary(
             if len(values) == 0:
                 continue
             x_values.append(num_factories)
-            y_values.append(sum(values) / len(values))
+            y_val = sum(values) / len(values)
+            y_values.append(y_val)
+            all_y_values.append(y_val)
         if len(x_values) == 0:
             continue
-        max_value, min_value = (
-            max(max_value, max(y_values)),
-            min(min_value, min(y_values)),
-        )
         has_data = True
+        factory_plots.append((rz_factory, x_values, y_values))
+
+    if not has_data:
+        _save_no_data_plot(title, output_path, figsize=(6, 4))
+        return
+
+    plt.figure(figsize=(6, 4))
+    for rz_factory, x_values, y_values in factory_plots:
         plt.plot(
             x_values,
             y_values,
             marker="o",
             linewidth=2.0,
-            color=colors.get(rz_factory, "#70AD47"),
+            color=RZ_FACTORY_COLORS.get(rz_factory, RZ_FACTORY_COLORS["STAR"]),
             label=rz_factory,
         )
 
-    if not has_data:
-        plt.title(title)
-        plt.text(0.5, 0.5, "No valid data", ha="center", va="center")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=200)
-        plt.close()
-        return
-
-    plt.axhline(1.0, color="black", linewidth=1, linestyle="--")
+    plt.axhline(1.0, linewidth=1, linestyle="--")
     plt.xlabel("Number of INJEQT factories")
 
-    if max_value > 0 and min_value > 0 and max_value / min_value >= 10:
+    if _should_use_log_scale(all_y_values):
         plt.yscale("log")
 
     plt.ylabel("Global mean improvement over TDG (x)")
     plt.title(title)
     plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=200)
-    plt.close()
+    _save_current_plot(output_path)
+
+
+def _collect_rz_injection_fractions_by_tfactory_and_model(
+    rows: list[dict[str, str]],
+) -> dict[str, dict[str, list[float]]]:
+    """
+    Collect RZ injection fractions grouped by T factory type and execution model.
+    Returns dict[t_factory_type][model] = [fractions]
+    """
+    result: dict[str, dict[str, list[float]]] = {}
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+
+        t_factory_type = row.get("t_factory_type", "")
+        if not t_factory_type:
+            continue
+
+        model = row.get("model", "")
+        if model not in RZ_FRACTION_MODELS:
+            continue
+
+        rz_injection_error = row.get("rz_injection_error", "")
+        total_error = row.get("total_error", "")
+        if rz_injection_error == "" or total_error == "":
+            continue
+
+        rz_inj = float(rz_injection_error)
+        tot_err = float(total_error)
+        if tot_err <= 0:
+            continue
+
+        fraction = rz_inj / tot_err
+        result.setdefault(t_factory_type, {}).setdefault(model, []).append(fraction)
+
+    return result
+
+
+def _plot_fraction_violin(
+    data_by_tfactory: dict[str, dict[str, list[float]]],
+    output_path: Path,
+) -> None:
+    """
+    Plot RZ injection fractions as violin plot with T factory types on x-axis
+    and TDG/INJEQT violins side by side for each type.
+    """
+    if not data_by_tfactory:
+        _save_no_data_plot("RZ Injection Error Fraction", output_path, figsize=(8, 4))
+        return
+
+    tfactory_types = sorted(data_by_tfactory.keys())
+
+    violin_data_list: list[list[float]] = []
+    positions_list: list[float] = []
+    violin_colors: list[str] = []
+
+    offset = 0.2
+    x_base = 0
+    xtick_positions: list[float] = []
+    xtick_labels: list[str] = []
+
+    for tfactory in tfactory_types:
+        xtick_positions.append(x_base)
+        xtick_labels.append(tfactory)
+
+        for model in RZ_FRACTION_MODELS:
+            fractions = data_by_tfactory[tfactory].get(model, [])
+            if fractions:
+                violin_data_list.append(fractions)
+                if model == "TDG":
+                    positions_list.append(x_base - offset)
+                else:
+                    positions_list.append(x_base + offset)
+                violin_colors.append(MODEL_COLORS[model])
+
+        x_base += 1.5
+
+    if not violin_data_list:
+        _save_no_data_plot("RZ Injection Error Fraction", output_path, figsize=(8, 4))
+        return
+
+    _, ax = plt.subplots(figsize=(max(8, len(tfactory_types) * 1.5), 4))
+
+    parts = ax.violinplot(
+        violin_data_list,
+        positions=positions_list,
+        widths=0.3,
+        showmeans=True,
+        showmedians=True,
+    )
+
+    for i, pc in enumerate(parts["bodies"]):  # type: ignore[index]
+        pc.set_facecolor(violin_colors[i])
+        pc.set_edgecolor(violin_colors[i])
+        pc.set_alpha(0.7)
+
+    for partname in ("cbars", "cmins", "cmaxes", "cmedians", "cmeans"):
+        if partname in parts:
+            vp = parts[partname]
+            vp.set_color(violin_colors)
+            vp.set_linewidth(1.5)
+
+    ax.set_xticks(xtick_positions)
+    ax.set_xticklabels(xtick_labels)
+    ax.set_ylabel("Fraction of Total Error from RZ Injection")
+    ax.set_title("RZ Injection Error Fraction")
+    ax.set_ylim(0, 1)
+    ax.grid(axis="y", alpha=0.3)
+
+    legend_handles = [
+        Patch(facecolor=MODEL_COLORS["TDG"], alpha=0.7, label="TDG"),
+        Patch(facecolor=MODEL_COLORS["INJEQT"], alpha=0.7, label="INJEQT"),
+    ]
+    ax.legend(handles=legend_handles)
+
+    _save_current_plot(output_path)
 
 
 def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
     rows = load_rows(csv_path)
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
+    baseline_map_cache: dict[tuple[str, str], dict[tuple[str, int], float]] = {}
+
     for metric in PLOT_COLUMNS:
         for t_factory_type in T_FACTORY_TYPES:
+            baseline_key = (metric, t_factory_type)
+            if baseline_key not in baseline_map_cache:
+                baseline_map_cache[baseline_key] = _build_tdg_baseline_map(
+                    rows, metric, t_factory_type
+                )
+
             sweep_series_by_factory: dict[str, dict[int, dict[str, list[float]]]] = {}
             best_series_by_factory: dict[str, dict[str, list[float]]] = {}
             for rz_factory in INJEQT_SWEEP_FACTORIES:
@@ -784,7 +928,6 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
                 best, _ = _compute_injeqt_star_series(sweep)
                 best_series_by_factory[rz_factory] = best
 
-            # union of benchmarks across factories
             benchmark_order = sorted(
                 set().union(*(bs.keys() for bs in best_series_by_factory.values()))
             )
@@ -818,6 +961,14 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
                 output_path=outputs_dir
                 / f"sweep_relative_{metric}_{t_factory_type.lower()}.png",
             )
+
+    fractions_by_tfactory = _collect_rz_injection_fractions_by_tfactory_and_model(rows)
+
+    if fractions_by_tfactory:
+        _plot_fraction_violin(
+            data_by_tfactory=fractions_by_tfactory,
+            output_path=outputs_dir / "rz_injection_fraction.png",
+        )
 
 
 def main() -> None:

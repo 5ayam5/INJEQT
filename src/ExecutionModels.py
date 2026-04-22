@@ -24,6 +24,9 @@ MAKE_CIRCUITS = CULTIVATION_SRC / "tools" / "make_circuits"
 SINTER_OUTPUTS_DIR = __ROOT_DIR__ / "sinter_outputs"
 
 
+ANGLE_PRECISION = 1e-15
+
+
 @dataclass(frozen=True)
 class CultivationSetupCacheKey:
     d_factory: int
@@ -103,7 +106,7 @@ class Factory:
 
 @dataclass(frozen=True)
 class TFactory(Factory):
-    synthesis_epsilon: float = 1e-10
+    synthesis_epsilon: float = ANGLE_PRECISION
 
     @property
     def num_t_injections(self: Self) -> int:
@@ -537,7 +540,7 @@ class RzFactory(Factory):
 @dataclass(frozen=True)
 class TtoRzSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
     t_factory_type: str = "Distillation"
-    synthesis_epsilon: float = 1e-10
+    synthesis_epsilon: float = ANGLE_PRECISION
     rng: Generator = field(default_factory=default_rng)
     _cached_t_factory: TFactory = field(init=False, repr=False)
 
@@ -814,6 +817,8 @@ class TDGExecutionModel(ExecutionModel):
         ready_time: float,
         angle: float,
     ) -> tuple[float, int]:
+        if abs(fmod(angle, 2 * pi)) < ANGLE_PRECISION:
+            return ready_time, 0
         return ready_time + self.factory.num_t_injections * (
             self.factory.factory_prep_time + self.inter_module_layer_step
         ), self.factory.num_t_injections
@@ -853,7 +858,7 @@ class INJEQTExecutionModel(ExecutionModel):
         """
         factory_availabilities = self.factory_availabilities
         earliest_factory_index, earliest_consumption_time = -1, float("inf")
-        next_angle = 2 * angle
+        next_angle = fmod(2 * angle, 2 * pi)
         for factory_index, (
             factory_angle,
             available_time,
@@ -863,7 +868,7 @@ class INJEQTExecutionModel(ExecutionModel):
             )
             if (
                 factory_angle is None
-                or abs(fmod(factory_angle - angle, 2 * pi)) < 1e-10
+                or abs(fmod(factory_angle - angle, 2 * pi)) < ANGLE_PRECISION
             ) and available_time < earliest_consumption_time:
                 earliest_factory_index = factory_index
                 earliest_consumption_time = available_time
@@ -892,6 +897,8 @@ class INJEQTExecutionModel(ExecutionModel):
     ) -> tuple[float, int]:
         success = False
         num_injections = 0
+        if abs(fmod(angle, 2 * pi)) < ANGLE_PRECISION:
+            success = True
         while not success:
             ready_time = (
                 self._consume_factory(angle, aware_time, ready_time)
