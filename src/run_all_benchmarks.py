@@ -37,12 +37,22 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-T_FACTORY_TYPES = (
+FACTORY_TYPES = (
     "Distillation",
     "Cultivation",
+    "STAR",
 )  # FIXME: add colour code back once implemented
-INJEQT_SWEEP_FACTORIES = ("LatticeSurgery", "Transversal", "STAR")
-TECHNOLOGIES = ("LatticeSurgery", "Transversal")
+TDG_FACTORY_TYPES = (
+    "Distillation",
+    "Cultivation",
+)
+FACTORY_TYPE_TO_RZ_FACTORIES = {
+    "Distillation": ("LatticeSurgery", "Transversal"),
+    "Cultivation": ("LatticeSurgery", "Transversal"),
+    "STAR": ("STAR",),
+}
+STAR_BASELINE_NUM_FACTORIES = 1
+STAR_BASELINE_POLICY = f"INJEQT_{STAR_BASELINE_NUM_FACTORIES}"
 STATS_COLUMNS = [
     "#in_modules",
     "#inter_modules",
@@ -94,9 +104,9 @@ SERIES_COLORS = (
     "#9E480E",
 )
 RZ_FACTORY_COLORS = {
-    "LatticeSurgery": SERIES_COLORS[0],
-    "Transversal": SERIES_COLORS[1],
-    "STAR": SERIES_COLORS[2],
+    "LatticeSurgery": SERIES_COLORS[2],
+    "Transversal": SERIES_COLORS[3],
+    "STAR": SERIES_COLORS[4],
 }
 MODEL_COLORS = {
     "TDG": SERIES_COLORS[0],
@@ -110,7 +120,7 @@ class RunConfig:
     model: str
     policy: str
     rz_factory: str
-    t_factory_type: str | None
+    t_factory_type: str
     stochastic: bool
     num_factories: int
 
@@ -128,6 +138,25 @@ class RunJob:
 
 
 _LOOKUP_TABLE: dict[int, int] | None = None
+
+
+def _normalized_t_factory_type(t_factory_type: str, rz_factory: str) -> str:
+    if t_factory_type:
+        return t_factory_type
+    if rz_factory == "STAR":
+        return "STAR"
+    return ""
+
+
+def _row_t_factory_type(row: dict[str, str] | dict[str, Any]) -> str:
+    return _normalized_t_factory_type(
+        str(row.get("t_factory_type", "") or ""),
+        str(row.get("rz_factory", "") or ""),
+    )
+
+
+def _rz_factories_for_t_factory_type(t_factory_type: str) -> tuple[str, ...]:
+    return FACTORY_TYPE_TO_RZ_FACTORIES.get(t_factory_type, ())
 
 
 def _init_worker(lookup: dict[int, int]) -> None:
@@ -207,9 +236,7 @@ def benchmark_display_label(benchmark_name: str, fallback_n: int | None = None) 
     return base
 
 
-def _compute_effective_distance(
-    factory_distance: int, t_factory_type: str | None
-) -> int:
+def _compute_effective_distance(factory_distance: int, t_factory_type: str) -> int:
     if t_factory_type == "Cultivation":
         required_d = max(factory_distance, 2 * CultivationFactory.d_colour_code)
         if required_d % 2 == 0:
@@ -253,14 +280,14 @@ def build_execution_model(
     if config.rz_factory == "LatticeSurgery":
         factory_model = LatticeSurgerySurfaceCodeFactory(
             effective_distance,
-            t_factory_type=config.t_factory_type or "Distillation",
+            t_factory_type=config.t_factory_type,
             synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(run_rng),
         )
     elif config.rz_factory == "Transversal":
         factory_model = TransversalSurfaceCodeFactory(
             effective_distance,
-            t_factory_type=config.t_factory_type or "Distillation",
+            t_factory_type=config.t_factory_type,
             synthesis_epsilon=synthesis_epsilon,
             rng=spawn_child_rng(run_rng),
         )
@@ -298,7 +325,7 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
             "model": job.config.model,
             "policy": job.config.policy,
             "rz_factory": job.config.rz_factory,
-            "t_factory_type": job.config.t_factory_type or "",
+            "t_factory_type": job.config.t_factory_type,
             "num_factories": job.config.num_factories,
             "trial": trial,
             "seed": seed if seed is not None else "",
@@ -351,7 +378,7 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
         job.benchmark_name,
         job.config.policy,
         job.config.rz_factory,
-        job.config.t_factory_type or "",
+        job.config.t_factory_type,
         job.config.num_factories,
     )
     print(f"Completed job {job_label} for trials {job.trials}")
@@ -360,7 +387,7 @@ def run_job(job: RunJob) -> list[dict[str, Any]]:
 
 def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
     configs: list[RunConfig] = []
-    for t in T_FACTORY_TYPES:
+    for t in TDG_FACTORY_TYPES:
         configs.append(
             RunConfig(
                 model="TDG",
@@ -372,9 +399,10 @@ def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
             )
         )
 
-    for t in T_FACTORY_TYPES:
+    for t in FACTORY_TYPES:
+        rz_factories = _rz_factories_for_t_factory_type(t)
         for num_factories in num_factories_sweep:
-            for rz_factory in TECHNOLOGIES:
+            for rz_factory in rz_factories:
                 configs.append(
                     RunConfig(
                         model="INJEQT",
@@ -385,17 +413,6 @@ def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
                         num_factories=num_factories,
                     )
                 )
-    for num_factories in num_factories_sweep:
-        configs.append(
-            RunConfig(
-                model="INJEQT",
-                policy=f"INJEQT_{num_factories}",
-                rz_factory="STAR",
-                t_factory_type=None,
-                stochastic=True,
-                num_factories=num_factories,
-            )
-        )
 
     return configs
 
@@ -403,11 +420,12 @@ def all_configs(num_factories_sweep: list[int]) -> list[RunConfig]:
 def row_cache_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int, str]:
     num_factories = int(row.get("num_factories", 0) or 0)
     trial = int(row["trial"])
+    t_factory_type = _row_t_factory_type(row)
     return (
         str(row["benchmark"]),
         str(row["model"]),
         str(row["rz_factory"]),
-        str(row.get("t_factory_type", "") or ""),
+        t_factory_type,
         num_factories,
         trial,
         str(row.get("synthesis_epsilon", "") or ""),
@@ -425,10 +443,10 @@ def read_existing_rows(
 
     latest: dict[tuple[str, str, str, str, int, int, str], dict[str, str]] = {}
     for row in rows:
-        if row.get("rz_factory") == "STAR" and row.get("t_factory_type", "") != "":
-            continue
+        canonical = dict(row)
+        canonical["t_factory_type"] = _row_t_factory_type(canonical)
         try:
-            latest[row_cache_key(row)] = row
+            latest[row_cache_key(canonical)] = canonical
         except (KeyError, ValueError):
             continue
     return latest
@@ -446,11 +464,12 @@ def write_rows(csv_path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str, int, int, str]:
+    t_factory_type = _row_t_factory_type(row)
     return (
         str(row["benchmark"]),
         str(row["model"]),
         str(row["rz_factory"]),
-        str(row.get("t_factory_type", "") or ""),
+        t_factory_type,
         int(row.get("num_factories", 0) or 0),
         int(row["trial"]),
         str(row.get("synthesis_epsilon", "") or ""),
@@ -473,18 +492,30 @@ def _relative_improvement(
     return baseline_value / candidate_value
 
 
-def _build_tdg_baseline_map(
+def _build_baseline_map(
     rows: list[dict[str, str]],
     metric: str,
     t_factory_type: str,
 ) -> dict[tuple[str, int], float]:
+    use_star_surrogate = t_factory_type == "STAR"
+    baseline_model = "INJEQT" if use_star_surrogate else "TDG"
+    baseline_rz_factory = "STAR" if use_star_surrogate else "TFactory"
+    baseline_num_factories = STAR_BASELINE_NUM_FACTORIES if use_star_surrogate else 0
+    baseline_policy = STAR_BASELINE_POLICY if use_star_surrogate else "TDG"
+
     baseline: dict[tuple[str, int], float] = {}
     for row in rows:
         if row.get("status") != "ok":
             continue
-        if row.get("model") != "TDG":
+        if row.get("model") != baseline_model:
             continue
-        if row.get("t_factory_type") != t_factory_type:
+        if row.get("rz_factory") != baseline_rz_factory:
+            continue
+        if _row_t_factory_type(row) != t_factory_type:
+            continue
+        if int(row.get("num_factories", 0) or 0) != baseline_num_factories:
+            continue
+        if row.get("policy", "") != baseline_policy:
             continue
         raw_value = row.get(metric, "")
         if raw_value == "":
@@ -497,8 +528,10 @@ def _filter_candidate_rows(
     rows: list[dict[str, str]],
     model: str,
     rz_factory: str,
-    t_factory_type: str | None,
+    t_factory_type: str,
 ):
+    if rz_factory not in _rz_factories_for_t_factory_type(t_factory_type):
+        return
     for row in rows:
         if row.get("status") != "ok":
             continue
@@ -506,10 +539,7 @@ def _filter_candidate_rows(
             continue
         if row.get("rz_factory") != rz_factory:
             continue
-        if t_factory_type is None:
-            if row.get("t_factory_type", "") != "":
-                continue
-        elif row.get("t_factory_type") != t_factory_type:
+        if _row_t_factory_type(row) != t_factory_type:
             continue
         yield row
 
@@ -517,14 +547,13 @@ def _filter_candidate_rows(
 def _collect_relative_series(
     rows: list[dict[str, str]],
     metric: str,
-    tdg_t_factory_type: str,
+    t_factory_type: str,
     candidate_rz_factory: str,
-    candidate_t_factory_type: str | None,
 ) -> dict[str, list[float]]:
-    baseline = _build_tdg_baseline_map(rows, metric, tdg_t_factory_type)
+    baseline = _build_baseline_map(rows, metric, t_factory_type)
     series: dict[str, list[float]] = {}
     for row in _filter_candidate_rows(
-        rows, "INJEQT", candidate_rz_factory, candidate_t_factory_type
+        rows, "INJEQT", candidate_rz_factory, t_factory_type
     ):
         benchmark = row["benchmark"]
         trial = int(row["trial"])
@@ -545,14 +574,13 @@ def _collect_relative_series(
 def _collect_sweep_series(
     rows: list[dict[str, str]],
     metric: str,
-    tdg_t_factory_type: str,
+    t_factory_type: str,
     candidate_rz_factory: str,
-    candidate_t_factory_type: str | None,
 ) -> dict[int, dict[str, list[float]]]:
-    baseline = _build_tdg_baseline_map(rows, metric, tdg_t_factory_type)
+    baseline = _build_baseline_map(rows, metric, t_factory_type)
     series: dict[int, dict[str, list[float]]] = {}
     for row in _filter_candidate_rows(
-        rows, "INJEQT", candidate_rz_factory, candidate_t_factory_type
+        rows, "INJEQT", candidate_rz_factory, t_factory_type
     ):
         if not row.get("policy", "").startswith("INJEQT_"):
             continue
@@ -674,7 +702,7 @@ def _plot_grouped_boxplot(
         if len(data) == 0:
             continue
 
-        color = SERIES_COLORS[idx % len(SERIES_COLORS)]
+        color = RZ_FACTORY_COLORS[label.split()[-1]]
         boxplot = plt.boxplot(
             data,
             positions=positions,
@@ -731,54 +759,85 @@ def _plot_sweep_summary(
     title: str,
     output_path: Path,
 ) -> None:
-    has_data = False
+    all_num_factories = sorted(
+        set().union(*(series.keys() for series in sweep_series_by_factory.values()))
+    )
+    if not all_num_factories:
+        _save_no_data_plot(title, output_path, figsize=(6, 4))
+        return
 
-    all_y_values: list[float] = []
-    factory_plots: list[tuple[str, list[int], list[float]]] = []
+    active_factories: list[str] = []
+    for rz_factory in sweep_series_by_factory:
+        series = sweep_series_by_factory[rz_factory]
+        if any(
+            len([v for per_benchmark in benchmark_map.values() for v in per_benchmark])
+            > 0
+            for benchmark_map in series.values()
+        ):
+            active_factories.append(rz_factory)
 
-    for rz_factory, series in sweep_series_by_factory.items():
-        x_values: list[int] = []
-        y_values: list[float] = []
-        for num_factories in sorted(series.keys()):
-            benchmark_map = series[num_factories]
+    if not active_factories:
+        _save_no_data_plot(title, output_path, figsize=(6, 4))
+        return
+
+    x_positions = list(range(len(all_num_factories)))
+    width = 0.75 / max(1, len(active_factories))
+    all_plot_values: list[float] = []
+    legend_handles: list[Patch] = []
+
+    plt.figure(figsize=(max(6, len(all_num_factories) * 0.8), 4))
+    for idx, rz_factory in enumerate(active_factories):
+        offset = (idx - (len(active_factories) - 1) / 2.0) * width
+        positions: list[float] = []
+        violin_data: list[list[float]] = []
+
+        for x_index, num_factories in enumerate(all_num_factories):
+            benchmark_map = sweep_series_by_factory[rz_factory].get(num_factories, {})
             values = [
                 v for per_benchmark in benchmark_map.values() for v in per_benchmark
             ]
             if len(values) == 0:
                 continue
-            x_values.append(num_factories)
-            y_val = sum(values) / len(values)
-            y_values.append(y_val)
-            all_y_values.append(y_val)
-        if len(x_values) == 0:
-            continue
-        has_data = True
-        factory_plots.append((rz_factory, x_values, y_values))
+            positions.append(x_index + offset)
+            violin_data.append(values)
+            all_plot_values.extend(values)
 
-    if not has_data:
+        if len(violin_data) == 0:
+            continue
+
+        color = RZ_FACTORY_COLORS.get(rz_factory, RZ_FACTORY_COLORS["STAR"])
+        parts = plt.violinplot(
+            violin_data,
+            positions=positions,
+            widths=width * 0.9,
+            showmeans=True,
+            showmedians=True,
+        )
+        for body in parts["bodies"]:  # type: ignore[index]
+            body.set_facecolor(color)
+            body.set_edgecolor(color)
+            body.set_alpha(0.7)
+        for partname in ("cbars", "cmins", "cmaxes", "cmedians", "cmeans"):
+            if partname in parts:
+                parts[partname].set_color(color)
+                parts[partname].set_linewidth(1.5)
+
+        legend_handles.append(Patch(facecolor=color, edgecolor=color, label=rz_factory))
+
+    if not all_plot_values:
         _save_no_data_plot(title, output_path, figsize=(6, 4))
         return
 
-    plt.figure(figsize=(6, 4))
-    for rz_factory, x_values, y_values in factory_plots:
-        plt.plot(
-            x_values,
-            y_values,
-            marker="o",
-            linewidth=2.0,
-            color=RZ_FACTORY_COLORS.get(rz_factory, RZ_FACTORY_COLORS["STAR"]),
-            label=rz_factory,
-        )
-
     plt.axhline(1.0, linewidth=1, linestyle="--")
+    plt.xticks(x_positions, [str(num) for num in all_num_factories])
     plt.xlabel("Number of INJEQT factories")
 
-    if _should_use_log_scale(all_y_values):
+    if _should_use_log_scale(all_plot_values):
         plt.yscale("log")
 
-    plt.ylabel("Global mean improvement over TDG (x)")
+    plt.ylabel("Improvement over TDG (x)")
     plt.title(title)
-    plt.legend()
+    plt.legend(handles=legend_handles)
     _save_current_plot(output_path)
 
 
@@ -786,20 +845,26 @@ def _collect_rz_injection_fractions_by_tfactory_and_model(
     rows: list[dict[str, str]],
 ) -> dict[str, dict[str, list[float]]]:
     """
-    Collect RZ injection fractions grouped by T factory type and execution model.
-    Returns dict[t_factory_type][model] = [fractions]
+    Collect RZ injection fractions grouped by factory type and model.
+    Returns dict[t_factory_type][model] = [fractions].
     """
     result: dict[str, dict[str, list[float]]] = {}
     for row in rows:
         if row.get("status") != "ok":
             continue
 
-        t_factory_type = row.get("t_factory_type", "")
-        if not t_factory_type:
+        t_factory_type = _row_t_factory_type(row)
+        model = row.get("model", "")
+        rz_factory = row.get("rz_factory", "")
+        if t_factory_type not in FACTORY_TYPES:
             continue
 
-        model = row.get("model", "")
         if model not in RZ_FRACTION_MODELS:
+            continue
+        if model == "TDG":
+            if t_factory_type not in TDG_FACTORY_TYPES:
+                continue
+        elif rz_factory not in _rz_factories_for_t_factory_type(t_factory_type):
             continue
 
         rz_injection_error = row.get("rz_injection_error", "")
@@ -836,7 +901,7 @@ def _plot_fraction_violin(
     positions_list: list[float] = []
     violin_colors: list[str] = []
 
-    offset = 0.2
+    offset = 0.5
     x_base = 0
     xtick_positions: list[float] = []
     xtick_labels: list[str] = []
@@ -845,14 +910,16 @@ def _plot_fraction_violin(
         xtick_positions.append(x_base)
         xtick_labels.append(tfactory)
 
-        for model in RZ_FRACTION_MODELS:
-            fractions = data_by_tfactory[tfactory].get(model, [])
-            if fractions:
+        present_models = [
+            m for m in RZ_FRACTION_MODELS if m in data_by_tfactory[tfactory]
+        ]
+        num_present = len(present_models)
+        if num_present > 0:
+            spacing = 2 * offset / (num_present + 1)
+            for idx, model in enumerate(present_models):
+                fractions = data_by_tfactory[tfactory][model]
                 violin_data_list.append(fractions)
-                if model == "TDG":
-                    positions_list.append(x_base - offset)
-                else:
-                    positions_list.append(x_base + offset)
+                positions_list.append(x_base - offset + (idx + 1) * spacing)
                 violin_colors.append(MODEL_COLORS[model])
 
         x_base += 1.5
@@ -861,7 +928,7 @@ def _plot_fraction_violin(
         _save_no_data_plot("RZ Injection Error Fraction", output_path, figsize=(8, 4))
         return
 
-    _, ax = plt.subplots(figsize=(max(8, len(tfactory_types) * 1.5), 4))
+    _, ax = plt.subplots(figsize=(max(6, len(tfactory_types) * 1.5), 3))
 
     parts = ax.violinplot(
         violin_data_list,
@@ -902,27 +969,17 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
     rows = load_rows(csv_path)
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    baseline_map_cache: dict[tuple[str, str], dict[tuple[str, int], float]] = {}
-
     for metric in PLOT_COLUMNS:
-        for t_factory_type in T_FACTORY_TYPES:
-            baseline_key = (metric, t_factory_type)
-            if baseline_key not in baseline_map_cache:
-                baseline_map_cache[baseline_key] = _build_tdg_baseline_map(
-                    rows, metric, t_factory_type
-                )
-
+        for t_factory_type in FACTORY_TYPES:
+            rz_factories = _rz_factories_for_t_factory_type(t_factory_type)
             sweep_series_by_factory: dict[str, dict[int, dict[str, list[float]]]] = {}
             best_series_by_factory: dict[str, dict[str, list[float]]] = {}
-            for rz_factory in INJEQT_SWEEP_FACTORIES:
+            for rz_factory in rz_factories:
                 sweep = _collect_sweep_series(
                     rows=rows,
                     metric=metric,
-                    tdg_t_factory_type=t_factory_type,
+                    t_factory_type=t_factory_type,
                     candidate_rz_factory=rz_factory,
-                    candidate_t_factory_type=(
-                        None if rz_factory == "STAR" else t_factory_type
-                    ),
                 )
                 sweep_series_by_factory[rz_factory] = sweep
                 best, _ = _compute_injeqt_star_series(sweep)
@@ -936,7 +993,7 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
             ]
             series_data = {
                 f"INJEQT$^*$ {rz}": best_series_by_factory.get(rz, {})
-                for rz in INJEQT_SWEEP_FACTORIES
+                for rz in rz_factories
             }
 
             _plot_grouped_boxplot(
@@ -948,18 +1005,17 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
                 ),
                 output_path=(
                     outputs_dir
-                    / f"boxplot_relative_{metric}_vs_tdg_{t_factory_type.lower()}.png"
+                    / f"boxplot_relative_{metric}_vs_tdg_{t_factory_type.lower()}.pdf"
                 ),
             )
 
             _plot_sweep_summary(
                 sweep_series_by_factory={
-                    rz: sweep_series_by_factory.get(rz, {})
-                    for rz in INJEQT_SWEEP_FACTORIES
+                    rz: sweep_series_by_factory.get(rz, {}) for rz in rz_factories
                 },
                 title=f"{metric}: INJEQT sweep over num_factories ({t_factory_type})",
                 output_path=outputs_dir
-                / f"sweep_relative_{metric}_{t_factory_type.lower()}.png",
+                / f"sweep_relative_{metric}_{t_factory_type.lower()}.pdf",
             )
 
     fractions_by_tfactory = _collect_rz_injection_fractions_by_tfactory_and_model(rows)
@@ -967,7 +1023,7 @@ def plot_from_csv(csv_path: Path, outputs_dir: Path) -> None:
     if fractions_by_tfactory:
         _plot_fraction_violin(
             data_by_tfactory=fractions_by_tfactory,
-            output_path=outputs_dir / "rz_injection_fraction.png",
+            output_path=outputs_dir / "rz_injection_fraction.pdf",
         )
 
 
@@ -1074,7 +1130,7 @@ def main() -> None:
                         benchmark_name,
                         config.model,
                         config.rz_factory,
-                        config.t_factory_type or "",
+                        config.t_factory_type,
                         config.num_factories,
                         trial,
                         str(resolved_synthesis_epsilon),
