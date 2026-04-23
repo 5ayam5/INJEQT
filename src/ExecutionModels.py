@@ -475,7 +475,10 @@ class CultivationFactory(TFactory, SurfaceCodeFactory):
             time = 0.0
             while True:  # escape success
                 while True:  # parallel success of colour code preparation
-                    time += self._cached_stage1_rounds
+                    time += (
+                        self._cached_stage1_rounds
+                        * self.factory_syndrome_extraction_cycles
+                    )
                     if log(self.rng.uniform(0.0, 1.0)) >= (
                         self.d_factory * self.d_factory
                     ) / self._cached_n_color * log(
@@ -483,7 +486,9 @@ class CultivationFactory(TFactory, SurfaceCodeFactory):
                     ):
                         break
 
-                time += self._cached_stage3_rounds
+                time += (
+                    self._cached_stage3_rounds * self.factory_syndrome_extraction_cycles
+                )
                 if log(self._cached_stage3_success_probability) >= log(
                     self.rng.uniform(0.0, 1.0)
                 ):

@@ -1,5 +1,5 @@
 [tool.pyright]
-extraPaths = ["imports/magic-state-cultivation/src"]
+extraPaths = ["imports/magic-state-cultivation/src", "src"]
 
 [tool.ruff]
 src = [".", "imports/magic-state-cultivation/src"]
