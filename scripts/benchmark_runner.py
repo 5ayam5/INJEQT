@@ -20,6 +20,8 @@ from benchmark_config import (
 )
 from numpy.random import Generator, default_rng
 
+import __main__
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys_path:
@@ -44,6 +46,8 @@ from experiments import (
     evaluate_circuit,
     load_lookup_table,
 )
+
+__main__.CompiledCirc = CompiledCirc  # type: ignore
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,19 @@ from __future__ import annotations
 
 from argparse import ArgumentParser
 from pathlib import Path
+from sys import path as sys_path
+
+import __main__
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SRC_DIR = ROOT_DIR / "src"
+if str(SRC_DIR) not in sys_path:
+    sys_path.insert(0, str(SRC_DIR))
+from experiments import (
+    CompiledCirc,
+)
+
+__main__.CompiledCirc = CompiledCirc  # type: ignore
 
 from benchmark_config import parse_num_factories_sweep
 from benchmark_plotter import plot_from_csv
@@ -68,7 +81,7 @@ def main() -> None:
     if args.synthesis_epsilon is not None and args.synthesis_epsilon <= 0:
         raise ValueError("--synthesis-epsilon must be positive when provided.")
     num_factories_sweep = parse_num_factories_sweep(args.num_factories_sweep)
-    
+
     plot_metrics = [m.strip() for m in args.plot_metrics.split(",") if m.strip()]
     if not plot_metrics:
         raise ValueError("--plot-metrics must contain at least one metric.")
