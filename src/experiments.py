@@ -45,16 +45,20 @@ class GrossCodeErrorModel:
     t_injection_cost: float = 10**-7.4
 
 
+# FIXME: this is broken and needs to be fixed since
+# it uses the injection cost instead of the actual error rate of the factory
+# plus potentially some other issues with the computation
 def compute_synthesis_epsilon(
     error_model: GrossCodeErrorModel,
     num_noncliffords: int,
 ) -> float:
-    return (
-        -10
-        * math.log10(error_model.t_injection_cost)
-        * error_model.t_injection_cost
-        / num_noncliffords
-    )
+    # return (
+    #     -10
+    #     * math.log10(error_model.t_injection_cost)
+    #     * error_model.t_injection_cost
+    #     / num_noncliffords
+    # )
+    return 1e-10
 
 
 def count_noncliffords(circuit: CompiledCirc) -> int:

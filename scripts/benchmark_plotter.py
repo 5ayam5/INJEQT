@@ -38,9 +38,12 @@ MODEL_COLORS = {
 def _adaptive_figsize(
     num_x_points: int, min_width: float = 5.0, num_plots: float | None = None
 ) -> tuple[float, float]:
-    width = max(min_width, num_x_points * 0.5)
-    ratio = 4.0 if num_x_points > 10 else 2.0
-    height = max(2.0, width / ratio)
+    if num_x_points > 10:
+        width = max(min_width, num_x_points * 0.5)
+        height = width / 4.0
+    else:
+        height = max(min_width, num_x_points * 0.5) / 1.5
+        width = height * 2.0
     return (width, height if num_plots is None else height * num_plots / 1.75)
 
 
@@ -680,7 +683,7 @@ def _plot_selected_num_factories_violin(
     ax.set_xticklabels(xtick_labels)
     ax.set_ylabel("#Factories")
     ax.set_title(
-        f"{METRIC_LABELS.get(metric, metric)}: Selected INJEQT* num_factories\nacross benchmarks"
+        f"{METRIC_LABELS.get(metric, metric)}: Optimal INJEQT* factories across benchmarks"
     )
     _set_y_axis_style(ax, all_values)
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
@@ -813,7 +816,7 @@ def _plot_combined_selected_num_factories_violin(
                 ax.legend(handles=legend_handles)
 
     fig.suptitle(
-        "Selected INJEQT* num_factories\nacross benchmarks",
+        "Optimal INJEQT* factories across benchmarks",
         fontsize=14,
         y=1.00,
     )
