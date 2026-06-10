@@ -64,7 +64,7 @@ def _set_y_axis_style(
         return
 
     if use_log_scale:
-        ax.yaxis.set_major_locator(LogLocator(base=10, numticks=12))
+        ax.yaxis.set_major_locator(LogLocator(base=10))
         return
 
     min_value = min(values)
@@ -80,7 +80,6 @@ def _set_y_axis_style(
         upper = lower + 0.1
 
     ax.set_ylim(lower, upper)
-    ax.yaxis.set_major_locator(MaxNLocator())
 
 
 def load_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -686,7 +685,7 @@ def _plot_selected_num_factories_violin(
         f"{METRIC_LABELS.get(metric, metric)}: Optimal INJEQT* factories across benchmarks"
     )
     _set_y_axis_style(ax, all_values)
-    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.yaxis.set_major_locator(MaxNLocator("auto", integer=True))
     ax.grid(axis="y", alpha=0.3)
 
     legend_handles = [
@@ -715,6 +714,10 @@ def _plot_combined_selected_num_factories_violin(
     num_metrics = len(metrics)
     if num_metrics == 0:
         return
+
+    metrics.remove("total_error")
+    metrics.remove("num_physical_qubits")
+    num_metrics = len(metrics)
 
     num_x_points = len(TDG_FACTORY_TYPES)
 
@@ -794,7 +797,7 @@ def _plot_combined_selected_num_factories_violin(
 
         ax.set_title(f"{METRIC_LABELS.get(metric, metric)}")
         _set_y_axis_style(ax, all_values)
-        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.yaxis.set_major_locator(MaxNLocator("auto", integer=True))
         ax.grid(axis="y", alpha=0.3)
 
         if ax_idx == num_metrics - 1:
@@ -935,7 +938,7 @@ def _plot_combined_boxplots(
             ax.set_xlabel("Benchmark")
 
         if ax_idx == 0:
-            ax.legend(handles=legend_handles)
+            ax.legend(handles=legend_handles, loc="upper left")
 
     fig.suptitle(
         f"Improvement over {baseline_label} ({t_factory_type})",

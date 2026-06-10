@@ -55,15 +55,25 @@ def main() -> None:
             physical_qubit_error_rate=phys_rate,
             rng=default_rng(seed + 1),
         )
-    except Exception:
-        star_times: List[float] = [math.nan]
-    else:
         star_times: List[float] = []
         for _ in range(samples):
-            try:
-                star_times.append(float(star_factory.factory_prep_time))
-            except Exception:
-                star_times.append(math.nan)
+            star_times.append(float(star_factory.factory_prep_time))
+        # compute STAR discard rate (per attempt) using cached probabilities when available
+        m = getattr(star_factory, "_cached_m_theta_success_probability", None)
+        parallel = getattr(star_factory, "_cached_parallel_attempt_scale", None)
+        log_exp = getattr(
+            star_factory, "_cached_log_expansion_success_probability", None
+        )
+        if m is not None and parallel is not None and log_exp is not None:
+            none_success = math.exp(parallel * math.log(1 - m)) if 1 - m > 0 else 0.0
+            inner_success = 1 - none_success
+            expansion_success = math.exp(log_exp)
+            star_discard = 1 - (inner_success * expansion_success)
+        else:
+            star_discard = math.nan
+    except Exception:
+        star_times = [math.nan]
+        star_discard = math.nan
 
     avg_rz = _mean_finite(star_times)
 
@@ -74,15 +84,18 @@ def main() -> None:
             physical_qubit_error_rate=phys_rate,
             rng=default_rng(seed),
         )
-    except Exception:
-        cult_times = [math.nan]
-    else:
         cult_times: List[float] = []
         for _ in range(samples):
-            try:
-                cult_times.append(float(cult_factory.t_prep_time))
-            except Exception:
-                cult_times.append(math.nan)
+            cult_times.append(float(cult_factory.t_prep_time))
+        s12 = getattr(cult_factory, "_cached_stage12_success_probability", None)
+        s3 = getattr(cult_factory, "_cached_stage3_success_probability", None)
+        if s12 is not None and s3 is not None:
+            cult_discard = 1 - (s12 * s3)
+        else:
+            cult_discard = math.nan
+    except Exception:
+        cult_times = [math.nan]
+        cult_discard = math.nan
 
     avg_cult = _mean_finite(cult_times)
 
@@ -90,9 +103,15 @@ def main() -> None:
     print(
         f"STAR RZ factory average prep time (sampled {samples} times, d_effective={eff_rz_d}): {avg_rz if not math.isnan(avg_rz) else 'N/A'}"
     )
+    print(
+        f"STAR discard rate (per attempt): {star_discard if not math.isnan(star_discard) else 'N/A'}"
+    )
     print()
     print(
         f"Cultivation t_prep_time average (sampled {samples} times, d_effective={eff_cult_d}): {avg_cult if not math.isnan(avg_cult) else 'N/A'}"
+    )
+    print(
+        f"Cultivation discard rate (per attempt): {cult_discard if not math.isnan(cult_discard) else 'N/A'}"
     )
 
 

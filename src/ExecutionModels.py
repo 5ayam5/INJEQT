@@ -500,7 +500,7 @@ class CultivationFactory(TFactory, SurfaceCodeFactory):
     @property
     @override
     def num_physical_qubits(self: Self) -> int:
-        return 2 * self.d_factory**2 - 1
+        return self._num_physical_qubits_per_logical_qubit
 
 
 @dataclass(frozen=True)
@@ -756,7 +756,7 @@ class STARSurfaceCodeFactory(RzFactory, SurfaceCodeFactory):
     @property
     @override
     def num_physical_qubits(self: Self) -> int:
-        return self._num_physical_qubits_per_logical_qubit
+        return 2 * self._num_physical_qubits_per_logical_qubit
 
 
 @dataclass(frozen=True)
