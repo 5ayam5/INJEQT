@@ -128,7 +128,7 @@ Useful flags:
 | `--factory-distance`    | `7`                                                          | factory code distance (cultivation is bumped to an odd $d \ge 2 d_{\mathrm{colour}}$) |
 | `--num-trials`          | `3`                                                          | trials per stochastic configuration                                                   |
 | `--seed`                | `0`                                                          | seed root; also names the output directory                                            |
-| `--synthesis-epsilon`   | auto                                                         | rotation-synthesis precision $\epsilon$; overrides `compute_synthesis_epsilon()`      |
+| `--synthesis-epsilon`   | auto                                                         | rotation-synthesis precision $\varepsilon$; overrides `compute_synthesis_epsilon()`   |
 | `--parallel-cores`      | `4`                                                          | worker processes                                                                      |
 | `--plot-only`           | off                                                          | regenerate figures from the existing CSV                                              |
 | `--plot-metrics`        | `total_error,space_time,wall_clock_time,num_physical_qubits` | metrics in the combined figures                                                       |
@@ -201,9 +201,9 @@ vendored as a submodule under `imports/`.
 
 ## A note on the committed outputs
 
-The CSVs and figures under `outputs/` were generated incrementally over time, and
-the runner reuses any row already marked `status=ok` (its cache key covers the
-configuration but not the code version). Some rows therefore predate later
+The CSVs and figures under `outputs/` were generated incrementally over time,
+and the runner reuses any row already marked `status=ok` (its cache key covers
+the configuration but not the code version). Some rows therefore predate later
 refinements to the timing and error models, so individual numbers may differ
 slightly from what the current code produces. The trends and relative
 comparisons the figures are used for are unaffected.
