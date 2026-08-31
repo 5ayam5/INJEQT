@@ -806,6 +806,18 @@ class ExecutionModel:
     ) -> tuple[float, int]:
         pass
 
+    @property
+    @abstractmethod
+    def rotation_synthesis_error_rate(self: Self) -> float:
+        """
+        Logical error incurred by synthesising one non-Clifford rotation.
+
+        `Factory.synthesis_logical_error_rate` is per magic state on the T
+        factories but already per rotation on the Rz factories, so each
+        execution model is responsible for converting to a per-rotation rate.
+        """
+        pass
+
 
 @dataclass(frozen=True)
 class TDGExecutionModel(ExecutionModel):
@@ -814,6 +826,13 @@ class TDGExecutionModel(ExecutionModel):
     def __post_init__(self):
         if not isinstance(self.factory, TFactory):
             raise TypeError("TDGExecutionModel requires a TFactory.")
+
+    @property
+    @override
+    def rotation_synthesis_error_rate(self: Self) -> float:
+        # One rotation consumes num_t_injections magic states, each carrying
+        # the T factory's per-state error.
+        return self.factory.num_t_injections * self.factory.synthesis_logical_error_rate
 
     @override
     def rz_injection_time(
@@ -852,6 +871,13 @@ class INJEQTExecutionModel(ExecutionModel):
     @override
     def num_factory_qubits(self: Self) -> int:
         return super().num_factory_qubits * self.num_factories
+
+    @property
+    @override
+    def rotation_synthesis_error_rate(self: Self) -> float:
+        # Rz factory rates are already per rotation: the T -> Rz factories fold
+        # in num_t_injections, and STAR prepares the rotation state directly.
+        return self.factory.synthesis_logical_error_rate
 
     def _consume_factory(
         self: Self, angle: float, aware_time: float, ready_time: float

@@ -45,20 +45,16 @@ class GrossCodeErrorModel:
     t_injection_cost: float = 10**-7.4
 
 
-# FIXME: this is broken and needs to be fixed since
-# it uses the injection cost instead of the actual error rate of the factory
-# plus potentially some other issues with the computation
 def compute_synthesis_epsilon(
     error_model: GrossCodeErrorModel,
     num_noncliffords: int,
 ) -> float:
-    # return (
-    #     -10
-    #     * math.log10(error_model.t_injection_cost)
-    #     * error_model.t_injection_cost
-    #     / num_noncliffords
-    # )
-    return 1e-10
+    return (
+        -10
+        * math.log10(error_model.t_injection_cost)
+        * error_model.t_injection_cost
+        / num_noncliffords
+    )
 
 
 def count_noncliffords(circuit: CompiledCirc) -> int:
@@ -355,10 +351,15 @@ def evaluate_circuit(
             rz_finish_time, num_injections = execution_model.rz_injection_time(
                 in_start_t, inter_end_t, angle
             )
-            rz_injection_error += (
-                num_injections * error_model.inter_cost
-                + execution_model.factory.synthesis_logical_error_rate
-            )
+            # Identity rotations consume no magic state, so they incur no
+            # synthesis error. Charging it unconditionally penalises INJEQT far
+            # more than TDG, since the Rz factory's rate is num_t_injections
+            # times the T factory's.
+            if num_injections > 0:
+                rz_injection_error += (
+                    num_injections * error_model.inter_cost
+                    + execution_model.rotation_synthesis_error_rate
+                )
             time_rz_injection += rz_finish_time - inter_end_t
             end_t = rz_finish_time
 
